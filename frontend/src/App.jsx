@@ -1,61 +1,49 @@
-import { useState } from 'react'
-import './App.css'
+import React, { useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import LandingPage from './pages/LandingPage';
+import SubmissionPage from './pages/SubmissionPage';
+import ReviewDashboardPage from './pages/ReviewDashboardPage';
+import HistoryPage from './pages/HistoryPage';
+import ComponentPreview from './views/ComponentPreview';
 
 function App() {
-  const [backendStatus, setBackendStatus] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [backendStatus, setBackendStatus] = useState(null);
+  const [backendLoading, setBackendLoading] = useState(false);
 
   const checkBackendHealth = async () => {
-    setLoading(true)
+    setBackendLoading(true);
     try {
-      const response = await fetch('/api/v1/health')
-      const data = await response.json()
-      setBackendStatus(data)
+      const response = await fetch('/api/v1/health');
+      const data = await response.json();
+      setBackendStatus(data);
     } catch (err) {
-      setBackendStatus({ status: 'offline', error: err.message })
+      setBackendStatus({ status: 'offline', error: err.message });
     } finally {
-      setLoading(false)
+      setBackendLoading(false);
     }
-  }
+  };
 
   return (
-    <div className="recode-container">
-      <header className="recode-header">
-        <img src="/Logo.svg" alt="Re:Code Logo" className="recode-logo" />
-        <p className="recode-tagline">Automated Code Diagnostics • Static AST Scanner • AI Code Reviews</p>
-      </header>
-
-      <main className="recode-card">
-        <div className="badge">Module 1 Operational</div>
-        <h1>Read. Review. Refine.</h1>
-        <p className="description">
-          Frontend client successfully initialized with React &amp; Vite. Serving official unmodified <code>/Logo.svg</code>.
-        </p>
-
-        <div className="actions">
-          <button 
-            type="button" 
-            className="action-btn"
-            onClick={checkBackendHealth}
-            disabled={loading}
-          >
-            {loading ? 'Checking Health...' : 'Probe Backend Health (GET /api/v1/health)'}
-          </button>
-        </div>
-
-        {backendStatus && (
-          <div className="status-box">
-            <span className="status-label">Status Response:</span>
-            <pre>{JSON.stringify(backendStatus, null, 2)}</pre>
-          </div>
-        )}
-      </main>
-
-      <footer className="recode-footer">
-        A College Project By Shivam Vishwakarma
-      </footer>
-    </div>
-  )
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/submit" element={<SubmissionPage />} />
+        <Route path="/review/:id" element={<ReviewDashboardPage />} />
+        <Route path="/history" element={<HistoryPage />} />
+        <Route
+          path="/preview"
+          element={
+            <ComponentPreview
+              onProbeBackend={checkBackendHealth}
+              backendStatus={backendStatus}
+              backendLoading={backendLoading}
+            />
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }
 
-export default App
+export default App;

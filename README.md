@@ -30,6 +30,16 @@ recode-app/
 
 ---
 
+## 📚 Project Documentation
+
+Comprehensive architectural specifications, developer setup instructions, and academic research appendices are available in the [`/docs`](./docs) directory:
+
+* 🏛️ **[System Architecture Specification](./docs/ARCHITECTURE.md)**: Monorepo topology, Express backend architecture, Supabase PostgreSQL schema, AST parser engine, Google Gemini AI pipeline, and Module 18 SSRF shield.
+* 🛠️ **[Developer Setup & Installation Guide](./docs/SETUP_GUIDE.md)**: Prerequisites, environment variables, database migration commands, dev server workflows, and troubleshooting.
+* 🎓 **[B.Sc. Computer Science Project Report Appendix](./docs/PROJECT_REPORT_APPENDIX.md)**: Formal academic project documentation covering problem formulation, 19-module breakdown, test results matrix, and future scope.
+
+---
+
 ## ⚡ Tooling Requirements
 
 - **Node.js**: `>= 18.0.0` (Active environment: `v24.22.0`)
