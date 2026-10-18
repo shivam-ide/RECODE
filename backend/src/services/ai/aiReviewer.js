@@ -46,7 +46,13 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
   for (const item of rawFindings) {
     if (!item || typeof item !== 'object') continue;
 
-    const line = typeof item.line === 'number' && item.line > 0 ? item.line : 1;
+    const line =
+      typeof item.line_number === 'number' && item.line_number > 0
+        ? item.line_number
+        : typeof item.line === 'number' && item.line > 0
+        ? item.line
+        : 1;
+
     const rawSev = typeof item.severity === 'string' ? item.severity.toUpperCase().trim() : '';
     const severity = VALID_SEVERITIES.includes(rawSev) ? rawSev : 'MEDIUM';
 
@@ -54,9 +60,23 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
     const category = VALID_CATEGORIES.includes(rawCat) ? rawCat : 'QUALITY';
 
     const title = String(item.title || 'AI Review Finding').trim();
-    const explanation = String(item.explanation || '').trim();
+    const whatIsWrong = String(item.what_is_wrong || item.what || item.explanation || item.description || '').trim();
+    const whyDangerous = String(item.why_dangerous || item.why || '').trim();
+    const howToFix = String(item.how_to_fix || item.how || item.remediation || '').trim();
+    const explanation = whatIsWrong || String(item.explanation || '').trim();
+
     const diff_before = String(item.diff_before || '').trim();
-    const diff_after = String(item.diff_after || '').trim();
+    let diff_after = String(item.diff_after || '').trim();
+
+    // Sanitize any generic SQL queries on non-SQL issues
+    if (
+      diff_after.includes('SELECT * FROM students') &&
+      !title.toLowerCase().includes('sql') &&
+      !explanation.toLowerCase().includes('sql') &&
+      !whatIsWrong.toLowerCase().includes('sql')
+    ) {
+      diff_after = '';
+    }
 
     const dedupeKey = `${line}:${category}:${title}`;
     if (seen.has(dedupeKey)) continue;
@@ -65,17 +85,25 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
     valid.push({
       line,
       lineNumber: line,
+      line_number: line,
       file: filePath,
       severity,
       category,
       title,
+      what_is_wrong: whatIsWrong,
+      what: whatIsWrong,
+      why_dangerous: whyDangerous,
+      why: whyDangerous,
+      how_to_fix: howToFix,
+      how: howToFix,
+      remediation: howToFix || explanation,
       explanation,
-      description: explanation, // Schema alias
-      remediation: explanation,   // Schema alias
+      description: explanation,
       diff_before,
       diff_after,
       source: 'GEMINI',
       engine_source: 'GEMINI',
+      engine: 'Gemini AI',
     });
   }
 
@@ -141,28 +169,23 @@ async function reviewCodeWithGemini({
       hasSyntaxError,
     });
 
-    let response;
-    try {
-      const generatePromise = client.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          systemInstruction: geminiClient.RECODE_SYSTEM_INSTRUCTION,
-          responseMimeType: 'application/json',
-          responseSchema: geminiClient.FINDINGS_JSON_SCHEMA,
-          temperature: 0.2,
-        },
-      });
-      response = await executeWithTimeout(generatePromise, effectiveTimeout);
-    } catch (firstErr) {
-      if (
-        firstErr &&
-        (firstErr.status === 'UNAVAILABLE' ||
-          (firstErr.message && (firstErr.message.includes('503') || firstErr.message.includes('high demand'))))
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        const retryPromise = client.models.generateContent({
-          model,
+    const candidateModels = [
+      process.env.GEMINI_MODEL,
+      'models/gemini-3.8-flash',
+      model,
+      'models/gemini-3-flash-preview',
+      'models/gemini-flash-latest',
+    ].filter(Boolean);
+    const uniqueModels = [...new Set(candidateModels.map((m) => (m.startsWith('models/') ? m : `models/${m}`)))];
+
+    let response = null;
+    let successfulModel = model;
+    let lastError = null;
+
+    for (const currentModel of uniqueModels) {
+      try {
+        const generatePromise = client.models.generateContent({
+          model: currentModel,
           contents: prompt,
           config: {
             systemInstruction: geminiClient.RECODE_SYSTEM_INSTRUCTION,
@@ -171,10 +194,29 @@ async function reviewCodeWithGemini({
             temperature: 0.2,
           },
         });
-        response = await executeWithTimeout(retryPromise, effectiveTimeout);
-      } else {
-        throw firstErr;
+        response = await executeWithTimeout(generatePromise, effectiveTimeout);
+        successfulModel = currentModel;
+        break;
+      } catch (err) {
+        lastError = err;
+        const isRetryable =
+          err.code === 429 ||
+          err.status === 429 ||
+          err.status === 'RESOURCE_EXHAUSTED' ||
+          err.status === 'UNAVAILABLE' ||
+          (err.message && (err.message.includes('429') || err.message.includes('503') || err.message.includes('404') || err.message.includes('quota') || err.message.includes('high demand') || err.message.includes('no longer available')));
+
+        if (isRetryable) {
+          console.warn(`[Re:Code AI] Model ${currentModel} error (${err.status || 'quota/demand'}). Trying fallback model...`);
+          continue;
+        } else {
+          throw err;
+        }
       }
+    }
+
+    if (!response && lastError) {
+      throw lastError;
     }
 
     // Extract raw text from response

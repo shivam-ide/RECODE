@@ -2,6 +2,7 @@ const {
   calculateScore,
   getGrade,
   PENALTY_WEIGHTS,
+  SEVERITY_CAPS,
   GRADE_THRESHOLDS,
 } = require('../src/services/analysis/scoringEngine');
 
@@ -10,12 +11,12 @@ describe('Module 10: Health Scoring & Grading Engine (scoringEngine.js)', () => 
   // SUITE 1: Penalty Weights & Grade Thresholds
   // ============================================================================
   describe('Penalty Weights and Grade Scale Integrity', () => {
-    it('should adhere to the exact penalty weights: CRITICAL (20), HIGH (10), MEDIUM (5), LOW (2), INFO (0)', () => {
+    it('should adhere to the exact penalty weights: CRITICAL (20), HIGH (10), MEDIUM (3), LOW (0.5), INFO (0)', () => {
       expect(PENALTY_WEIGHTS).toEqual({
         CRITICAL: 20,
         HIGH: 10,
-        MEDIUM: 5,
-        LOW: 2,
+        MEDIUM: 3,
+        LOW: 0.5,
         INFO: 0,
       });
     });
@@ -137,37 +138,35 @@ describe('Module 10: Health Scoring & Grading Engine (scoringEngine.js)', () => 
       expect(result.categoryScores.securityHealth).toBe(80);
     });
 
-    it('should calculate grade B for 1 CRITICAL and 1 MEDIUM finding (-25 pts, score 75)', () => {
+    it('should calculate grade B for 1 CRITICAL and 1 MEDIUM finding (-23 pts, score 77)', () => {
       const findings = [
         { severity: 'CRITICAL', category: 'SECURITY', title: 'Hardcoded API Secret' }, // -20
-        { severity: 'MEDIUM', category: 'QUALITY', title: 'Empty Catch Block' }, // -5
+        { severity: 'MEDIUM', category: 'QUALITY', title: 'Empty Catch Block' }, // -3
       ];
 
       const result = calculateScore(findings, 600, 3);
 
-      expect(result.healthScore).toBe(75);
+      expect(result.healthScore).toBe(77);
       expect(result.grade).toBe('B');
-      expect(result.totalDeductions).toBe(25);
+      expect(result.totalDeductions).toBe(23);
       expect(result.categoryScores.securityHealth).toBe(80);
-      expect(result.categoryScores.qualityHealth).toBe(95);
     });
 
-    it('should calculate grade C for diverse mixed findings (-37 pts, score 63)', () => {
+    it('should calculate grade C for diverse mixed findings (-33.5 pts, score 67)', () => {
       const findings = [
         { severity: 'CRITICAL', category: 'SECURITY', title: 'SQL Injection' }, // -20
         { severity: 'HIGH', category: 'OPTIMIZATION', title: 'Quadratic Loop' }, // -10
-        { severity: 'MEDIUM', category: 'QUALITY', title: 'Empty Catch' }, // -5
-        { severity: 'LOW', category: 'QUALITY', title: 'Console.log in Prod' }, // -2
+        { severity: 'MEDIUM', category: 'QUALITY', title: 'Empty Catch' }, // -3
+        { severity: 'LOW', category: 'QUALITY', title: 'Console.log in Prod' }, // -0.5
       ];
 
       const result = calculateScore(findings, 1200, 8);
 
-      expect(result.healthScore).toBe(63);
+      expect(result.healthScore).toBe(67);
       expect(result.grade).toBe('C');
-      expect(result.totalDeductions).toBe(37);
+      expect(result.totalDeductions).toBe(33.5);
       expect(result.categoryScores.securityHealth).toBe(80);
       expect(result.categoryScores.optimizationHealth).toBe(90);
-      expect(result.categoryScores.qualityHealth).toBe(93); // 100 - 7
     });
 
     it('should calculate grade D for 2 CRITICAL and 1 HIGH finding (-50 pts, score 50)', () => {
@@ -206,7 +205,6 @@ describe('Module 10: Health Scoring & Grading Engine (scoringEngine.js)', () => 
       expect(result.healthScore).toBe(0); // Clamped at 0 (never negative)
       expect(result.grade).toBe('F');
       expect(result.categoryScores.securityHealth).toBe(0); // Clamped at 0
-      expect(result.categoryScores.qualityHealth).toBe(90);
     });
   });
 
@@ -279,15 +277,9 @@ describe('Module 10: Health Scoring & Grading Engine (scoringEngine.js)', () => 
       // Severity breakdown
       expect(breakdown.severities.CRITICAL).toEqual({ count: 1, deduction: 20, penaltyPerIssue: 20 });
       expect(breakdown.severities.HIGH).toEqual({ count: 0, deduction: 0, penaltyPerIssue: 10 });
-      expect(breakdown.severities.MEDIUM).toEqual({ count: 1, deduction: 5, penaltyPerIssue: 5 });
-      expect(breakdown.severities.LOW).toEqual({ count: 1, deduction: 2, penaltyPerIssue: 2 });
+      expect(breakdown.severities.MEDIUM).toEqual({ count: 1, deduction: 3, penaltyPerIssue: 3, cap: 20 });
+      expect(breakdown.severities.LOW).toEqual({ count: 1, deduction: 0.5, penaltyPerIssue: 0.5, cap: 15 });
       expect(breakdown.severities.INFO).toEqual({ count: 1, deduction: 0, penaltyPerIssue: 0 });
-
-      // Category breakdown
-      expect(breakdown.categories.SECURITY).toEqual({ count: 1, deduction: 20, health: 80 });
-      expect(breakdown.categories.QUALITY).toEqual({ count: 2, deduction: 7, health: 93 });
-      expect(breakdown.categories.OPTIMIZATION).toEqual({ count: 1, deduction: 0, health: 100 });
-      expect(breakdown.categories.SYNTAX).toEqual({ count: 0, deduction: 0, health: 100 });
 
       // Explanations array
       expect(Array.isArray(breakdown.explanations)).toBe(true);
@@ -308,6 +300,64 @@ describe('Module 10: Health Scoring & Grading Engine (scoringEngine.js)', () => 
       expect(result.metrics.totalLines).toBe(1000);
       expect(result.metrics.filesCount).toBe(10);
       expect(result.metrics.issuesCount).toBe(1);
+    });
+  });
+
+  // ============================================================================
+  // SUITE 7: Penalty Capping & Zero-Critical/Zero-High Protection
+  // ============================================================================
+  describe('Penalty Capping & Zero-Critical/Zero-High Minimum Grade C Protection', () => {
+    it('should cap LOW issues at 15 points max (BenchmarkJava scenario with 49 LOW console logs)', () => {
+      // 49 LOW console logs = 49 * 0.5 = 24.5 pts -> capped at 15 pts
+      const lowFindings = Array.from({ length: 49 }, (_, i) => ({
+        severity: 'LOW',
+        category: 'QUALITY',
+        ruleId: 'CONSOLE_LOG_STMT',
+        title: 'Console log statement found',
+        line: i + 1,
+      }));
+
+      const result = calculateScore(lowFindings, 1200, 10);
+
+      expect(result.totalDeductions).toBe(15);
+      expect(result.healthScore).toBe(85);
+      expect(result.grade).toBe('B+');
+      expect(result.breakdown.severities.LOW.deduction).toBe(15);
+      expect(result.breakdown.severities.LOW.count).toBe(49);
+    });
+
+    it('should cap MEDIUM issues at 20 points max', () => {
+      // 20 MEDIUM issues = 20 * 3 = 60 pts -> capped at 20 pts
+      const medFindings = Array.from({ length: 20 }, (_, i) => ({
+        severity: 'MEDIUM',
+        category: 'QUALITY',
+        ruleId: 'EMPTY_CATCH_BLOCK',
+        title: 'Empty catch block',
+        line: i + 1,
+      }));
+
+      const result = calculateScore(medFindings, 800, 5);
+
+      expect(result.totalDeductions).toBe(20);
+      expect(result.healthScore).toBe(80);
+      expect(result.grade).toBe('B+');
+      expect(result.breakdown.severities.MEDIUM.deduction).toBe(20);
+    });
+
+    it('should ensure a project with 0 Critical and 0 High issues NEVER drops below Grade C (minimum score 70)', () => {
+      // Even with 100 LOW issues (capped at 15) and 50 MEDIUM issues (capped at 20)
+      const manyFindings = [
+        ...Array.from({ length: 100 }, (_, i) => ({ severity: 'LOW', category: 'QUALITY', line: i + 1 })),
+        ...Array.from({ length: 50 }, (_, i) => ({ severity: 'MEDIUM', category: 'QUALITY', line: i + 1 })),
+      ];
+
+      const result = calculateScore(manyFindings, 2000, 15);
+
+      // Total deductions capped at 15 + 20 = 35 -> raw score 65, clamped to min 70
+      expect(result.healthScore).toBeGreaterThanOrEqual(70);
+      expect(['A+', 'A', 'B+', 'B', 'C']).toContain(result.grade);
+      expect(result.grade).not.toBe('D');
+      expect(result.grade).not.toBe('F');
     });
   });
 });

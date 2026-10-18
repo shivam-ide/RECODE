@@ -19,6 +19,7 @@ import Footer from '../components/common/Footer';
 import BrandLogo from '../components/common/BrandLogo';
 import UserSessionPill from '../components/common/UserSessionPill';
 import { useAuth } from '../services/useAuth';
+import { API_BASE_URL } from '../config/api';
 
 // Supported Language Configuration matching backend validators
 const LANGUAGES = [
@@ -372,17 +373,45 @@ export default function SubmissionPage() {
         payload.branch = githubBranch.trim() || 'main';
       }
 
-      const res = await fetch('/api/v1/reviews/run', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
+      let res;
+      const targetUrl = API_BASE_URL ? `${API_BASE_URL}/api/v1/reviews/run` : '/api/v1/reviews/run';
+      try {
+        res = await fetch(targetUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+      } catch (fetchErr) {
+        // Fallback retry using relative proxy path if absolute URL fetch failed (e.g. CORS/network)
+        if (API_BASE_URL) {
+          try {
+            res = await fetch('/api/v1/reviews/run', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(payload),
+            });
+          } catch (proxyErr) {
+            throw fetchErr;
+          }
+        } else {
+          throw fetchErr;
+        }
+      }
 
-      const responseData = await res.json();
+      let responseData = {};
+      try {
+        responseData = await res.json();
+      } catch (jsonErr) {
+        responseData = {};
+      }
 
       if (!res.ok || responseData.status === 'error') {
-        const message = responseData.message || responseData.error || 'Review pipeline failed to execute.';
-        setErrorMsg(message);
+        if (res.status === 404) {
+          setErrorMsg('Endpoint not found: POST /api/v1/reviews/run. Please verify the Express server is running on port 5000.');
+        } else {
+          const message = responseData.message || responseData.error || `Review pipeline execution failed (HTTP ${res.status}).`;
+          setErrorMsg(message);
+        }
         setLoading(false);
         return;
       }
@@ -397,7 +426,17 @@ export default function SubmissionPage() {
       }
     } catch (err) {
       console.error('Review execution error:', err);
-      setErrorMsg(`Failed to connect to review pipeline: ${err.message}`);
+      const isOffline =
+        err.name === 'TypeError' ||
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('NetworkError') ||
+        err.message?.includes('Network request failed');
+
+      if (isOffline) {
+        setErrorMsg('Backend server is unreachable. Please verify the Express server is running on port 5000.');
+      } else {
+        setErrorMsg(`Failed to connect to review pipeline: ${err.message}`);
+      }
       setLoading(false);
     }
   };

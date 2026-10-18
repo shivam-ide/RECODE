@@ -1,22 +1,28 @@
 const PDFDocument = require('pdfkit');
+const path = require('path');
+const fs = require('fs');
 
 /**
- * Re:Code — Automated Review PDF Report Generator
+ * Re:Code — Enterprise Dynamic PDF Audit Service
  *
- * Produces high-fidelity, printable PDF audit summaries:
- * 1. Branded Header: Re:Code branding, Project Name, Timestamp, Health Score & Grade Gauge
- * 2. Executive Summary: Letter grade, Severity counts (Critical, High, Medium, Low), Category health percentages
- * 3. Detailed Findings: File path, Line number, Severity, Category, Title, Plain-language explanation, and Before/After Diff Blocks
- * 4. Docked Header/Footer across all pages with pagination
+ * Implements strict content-adaptive pagination:
+ * - Adaptive A4 margins: 16mm (45.35pt)
+ * - Zero trailing blank pages: dynamic height prediction and safe footer rendering
+ * - Atomic finding cards: avoids awkward page splits mid-card (break-inside: avoid)
+ * - Responsive page count: 1 page for concise audits, exactly N pages without empty sheet at end
  *
  * @param {Object} reviewData - Canonical or persisted review payload
+ * @param {Object} [options={}] - Customization options
  * @returns {Promise<Buffer>} Generated PDF binary buffer
  */
-function generateReviewPdf(reviewData = {}) {
+function generateReviewPdf(reviewData = {}, options = {}) {
   return new Promise((resolve, reject) => {
     try {
+      // 16mm standard A4 margin in typographic points (16 * 72 / 25.4 = ~45.35pt)
+      const MARGIN = 45.35;
+
       const doc = new PDFDocument({
-        margin: 40,
+        margin: MARGIN,
         size: 'A4',
         bufferPages: true,
       });
@@ -87,135 +93,158 @@ function generateReviewPdf(reviewData = {}) {
       const optimizationHealth = Math.max(0, Math.min(100, 100 - categoryDeductions.OPTIMIZATION));
 
       const pageWidth = doc.page.width;
-      const contentWidth = pageWidth - 80;
+      const pageHeight = doc.page.height;
+      const contentWidth = pageWidth - MARGIN * 2;
+      const safeBottomY = pageHeight - MARGIN - 30; // Leave 30pt breathing room for footer
 
       // ==========================================
       // SECTION 1: HEADER WITH BRANDING & SCORE
       // ==========================================
-      // Dark Header Canvas
-      doc.rect(40, 40, contentWidth, 80).fill('#0E0E0E');
+      const headerHeight = 84;
+      doc.rect(MARGIN, MARGIN, contentWidth, headerHeight).fill('#0E0E0E');
 
-      // Brand Logo & Tagline
-      doc.fillColor('#02C8F0').font('Helvetica-Bold').fontSize(14).text('{ Re:Code }', 55, 52);
-      doc.fillColor('#AAAAAA').font('Helvetica').fontSize(9).text('•  Read. Review. Refine.', 135, 55);
+      // Brand Logo (Official Re:Code Logo)
+      const logoPaths = [
+        path.resolve(__dirname, '../../assets/logo.png'),
+        path.resolve(__dirname, '../../../assets/logo.png'),
+        path.resolve(__dirname, '../../../../frontend/src/assets/logo.png'),
+        path.resolve(__dirname, '../../../../frontend/public/logo.png'),
+      ];
+      const logoPath = logoPaths.find((p) => fs.existsSync(p));
+
+      if (logoPath) {
+        try {
+          doc.image(logoPath, MARGIN + 14, MARGIN + 10, { width: 105, height: 26.25 });
+        } catch {
+          doc.fillColor('#02C8F0').font('Helvetica-Bold').fontSize(14).text('{ Re:Code }', MARGIN + 14, MARGIN + 14, { lineBreak: false });
+          doc.fillColor('#AAAAAA').font('Helvetica').fontSize(9).text('•  Read. Review. Refine.', MARGIN + 94, MARGIN + 17, { lineBreak: false });
+        }
+      } else {
+        doc.fillColor('#02C8F0').font('Helvetica-Bold').fontSize(14).text('{ Re:Code }', MARGIN + 14, MARGIN + 14, { lineBreak: false });
+        doc.fillColor('#AAAAAA').font('Helvetica').fontSize(9).text('•  Read. Review. Refine.', MARGIN + 94, MARGIN + 17, { lineBreak: false });
+      }
 
       // Report Title & Project Name
-      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(15).text(`Audit Report: ${projectName}`, 55, 74, {
-        width: 330,
+      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(13).text(`Audit Report: ${projectName}`, MARGIN + 14, MARGIN + 42, {
+        width: 320,
         ellipsis: true,
+        lineBreak: false,
       });
 
       // Metadata subtitle
       const sourceLabel = sourceType === 'github' ? (repoUrl ? `GitHub: ${repoUrl}` : 'Public GitHub Repository') : 'Pasted Code Snippet';
-      doc.fillColor('#888888').font('Helvetica').fontSize(8.5).text(
+      doc.fillColor('#888888').font('Helvetica').fontSize(8).text(
         `Scanned: ${new Date(createdAt).toUTCString()}  |  ${sourceLabel}`,
-        55,
-        96,
-        { width: 330, ellipsis: true }
+        MARGIN + 14,
+        MARGIN + 62,
+        { width: 320, ellipsis: true, lineBreak: false }
       );
 
       // Health Score Box (Right-aligned in header)
-      const scoreBoxX = pageWidth - 145;
-      doc.rect(scoreBoxX, 48, 90, 64).fill('#1A1A1A');
-      doc.rect(scoreBoxX, 48, 90, 64).lineWidth(1).stroke('#333333');
+      const scoreBoxW = 86;
+      const scoreBoxH = 68;
+      const scoreBoxX = pageWidth - MARGIN - scoreBoxW - 10;
+      const scoreBoxY = MARGIN + 8;
+      doc.rect(scoreBoxX, scoreBoxY, scoreBoxW, scoreBoxH).fill('#1A1A1A');
+      doc.rect(scoreBoxX, scoreBoxY, scoreBoxW, scoreBoxH).lineWidth(1).stroke('#333333');
 
       const scoreColor =
         score >= 90 ? '#27C93F' : score >= 80 ? '#02C8F0' : score >= 70 ? '#FFA116' : '#FF4D4D';
-      doc.fillColor(scoreColor).font('Helvetica-Bold').fontSize(17).text(`${score}/100`, scoreBoxX, 58, {
-        width: 90,
+      doc.fillColor(scoreColor).font('Helvetica-Bold').fontSize(16).text(`${score}/100`, scoreBoxX, scoreBoxY + 8, {
+        width: scoreBoxW,
         align: 'center',
+        lineBreak: false,
       });
-      doc.fillColor('#F1F1F1').font('Helvetica-Bold').fontSize(11).text(`Grade ${grade}`, scoreBoxX, 82, {
-        width: 90,
+      doc.fillColor('#F1F1F1').font('Helvetica-Bold').fontSize(10.5).text(`Grade ${grade}`, scoreBoxX, scoreBoxY + 30, {
+        width: scoreBoxW,
         align: 'center',
+        lineBreak: false,
       });
+      doc.fillColor('#888888').font('Helvetica').fontSize(7.5).text(
+        score >= 90 ? 'Production Ready' : score >= 70 ? 'Needs Attention' : 'High Risk',
+        scoreBoxX,
+        scoreBoxY + 48,
+        { width: scoreBoxW, align: 'center', lineBreak: false }
+      );
 
-      doc.y = 136;
+      doc.y = MARGIN + headerHeight + 16;
 
       // ==========================================
       // SECTION 2: EXECUTIVE SUMMARY & METRICS
       // ==========================================
-      doc.fillColor('#111111').font('Helvetica-Bold').fontSize(12).text('Executive Health Summary', 40, doc.y);
-      doc.rect(40, doc.y + 4, contentWidth, 1).fill('#E0E0E0');
-      doc.y += 12;
+      doc.fillColor('#111111').font('Helvetica-Bold').fontSize(11.5).text('Executive Health Summary', MARGIN, doc.y, { lineBreak: false });
+      doc.rect(MARGIN, doc.y + 14, contentWidth, 1).fill('#E0E0E0');
+      doc.y += 20;
 
-      // Severity Stat Cards (4 flat columns)
-      const cardWidth = (contentWidth - 30) / 4;
+      // Severity Stat Cards (4 columns)
+      const gap = 8;
+      const cardWidth = (contentWidth - gap * 3) / 4;
+      const cardHeight = 38;
       const cardY = doc.y;
 
-      // 1. Critical
-      doc.rect(40, cardY, cardWidth, 42).fill('#FFF0F0');
-      doc.rect(40, cardY, cardWidth, 42).lineWidth(1).stroke('#FFCDD2');
-      doc.fillColor('#D32F2F').font('Helvetica-Bold').fontSize(16).text(String(severityCounts.CRITICAL), 40, cardY + 6, { width: cardWidth, align: 'center' });
-      doc.fillColor('#555555').font('Helvetica-Bold').fontSize(8).text('CRITICAL ISSUES', 40, cardY + 26, { width: cardWidth, align: 'center' });
+      const stats = [
+        { count: severityCounts.CRITICAL, label: 'CRITICAL ISSUES', bg: '#FFF0F0', border: '#FFCDD2', color: '#D32F2F' },
+        { count: severityCounts.HIGH, label: 'HIGH ISSUES', bg: '#FFF8E1', border: '#FFE082', color: '#E65100' },
+        { count: severityCounts.MEDIUM, label: 'MEDIUM ISSUES', bg: '#F5F5F5', border: '#E0E0E0', color: '#616161' },
+        { count: severityCounts.LOW, label: 'LOW ISSUES', bg: '#E1F5FE', border: '#B3E5FC', color: '#0288D1' },
+      ];
 
-      // 2. High
-      const card2X = 40 + cardWidth + 10;
-      doc.rect(card2X, cardY, cardWidth, 42).fill('#FFF8E1');
-      doc.rect(card2X, cardY, cardWidth, 42).lineWidth(1).stroke('#FFE082');
-      doc.fillColor('#E65100').font('Helvetica-Bold').fontSize(16).text(String(severityCounts.HIGH), card2X, cardY + 6, { width: cardWidth, align: 'center' });
-      doc.fillColor('#555555').font('Helvetica-Bold').fontSize(8).text('HIGH ISSUES', card2X, cardY + 26, { width: cardWidth, align: 'center' });
+      stats.forEach((st, idx) => {
+        const cx = MARGIN + idx * (cardWidth + gap);
+        doc.rect(cx, cardY, cardWidth, cardHeight).fill(st.bg);
+        doc.rect(cx, cardY, cardWidth, cardHeight).lineWidth(1).stroke(st.border);
+        doc.fillColor(st.color).font('Helvetica-Bold').fontSize(14).text(String(st.count), cx, cardY + 5, { width: cardWidth, align: 'center', lineBreak: false });
+        doc.fillColor('#555555').font('Helvetica-Bold').fontSize(7.5).text(st.label, cx, cardY + 23, { width: cardWidth, align: 'center', lineBreak: false });
+      });
 
-      // 3. Medium
-      const card3X = card2X + cardWidth + 10;
-      doc.rect(card3X, cardY, cardWidth, 42).fill('#F5F5F5');
-      doc.rect(card3X, cardY, cardWidth, 42).lineWidth(1).stroke('#E0E0E0');
-      doc.fillColor('#616161').font('Helvetica-Bold').fontSize(16).text(String(severityCounts.MEDIUM), card3X, cardY + 6, { width: cardWidth, align: 'center' });
-      doc.fillColor('#555555').font('Helvetica-Bold').fontSize(8).text('MEDIUM ISSUES', card3X, cardY + 26, { width: cardWidth, align: 'center' });
-
-      // 4. Low
-      const card4X = card3X + cardWidth + 10;
-      doc.rect(card4X, cardY, cardWidth, 42).fill('#E1F5FE');
-      doc.rect(card4X, cardY, cardWidth, 42).lineWidth(1).stroke('#B3E5FC');
-      doc.fillColor('#0288D1').font('Helvetica-Bold').fontSize(16).text(String(severityCounts.LOW), card4X, cardY + 6, { width: cardWidth, align: 'center' });
-      doc.fillColor('#555555').font('Helvetica-Bold').fontSize(8).text('LOW ISSUES', card4X, cardY + 26, { width: cardWidth, align: 'center' });
-
-      doc.y = cardY + 54;
+      doc.y = cardY + cardHeight + 10;
 
       // Category Metrics Bar
-      doc.rect(40, doc.y, contentWidth, 30).fill('#F8F9FA');
-      doc.rect(40, doc.y, contentWidth, 30).lineWidth(1).stroke('#E9ECEF');
+      const metricsBarHeight = 26;
+      doc.rect(MARGIN, doc.y, contentWidth, metricsBarHeight).fill('#F8F9FA');
+      doc.rect(MARGIN, doc.y, contentWidth, metricsBarHeight).lineWidth(1).stroke('#E9ECEF');
       const metricsText = `Bugs Health: ${bugsHealth}%   |   Security Health: ${securityHealth}%   |   Quality: ${qualityHealth}%   |   Optimization: ${optimizationHealth}%`;
-      doc.fillColor('#333333').font('Helvetica-Bold').fontSize(8.5).text(metricsText, 40, doc.y + 10, { width: contentWidth, align: 'center' });
+      doc.fillColor('#333333').font('Helvetica-Bold').fontSize(8).text(metricsText, MARGIN, doc.y + 8, { width: contentWidth, align: 'center', lineBreak: false });
 
-      doc.y += 42;
+      doc.y += metricsBarHeight + 14;
 
-      // Evaluated Files Section (if provided)
+      // Evaluated Files Section (if any)
       if (files.length > 0) {
-        doc.fillColor('#111111').font('Helvetica-Bold').fontSize(10.5).text(`Evaluated Files (${files.length})`, 40, doc.y);
-        doc.y += 12;
-        files.slice(0, 8).forEach((f) => {
-          const path = f.file_path || f.path || 'snippet.js';
-          const lang = f.language || 'JavaScript';
-          const lines = f.lines_count || f.linesCount || 0;
-          doc.fillColor('#444444').font('Helvetica').fontSize(8.5).text(
-            `• ${path}  —  Language: ${lang}  |  ${lines} lines evaluated  |  ${f.issues_count || 0} issues`,
-            48,
-            doc.y
+        doc.fillColor('#111111').font('Helvetica-Bold').fontSize(10).text(`Evaluated Files (${files.length})`, MARGIN, doc.y, { lineBreak: false });
+        doc.y += 14;
+        const displayFiles = files.slice(0, 6);
+        displayFiles.forEach((f) => {
+          const fPath = f.file_path || f.path || 'snippet.js';
+          const fLang = f.language || 'JavaScript';
+          const fLines = f.lines_count || f.linesCount || 0;
+          doc.fillColor('#444444').font('Helvetica').fontSize(8).text(
+            `• ${fPath}  —  Language: ${fLang}  |  ${fLines} lines evaluated  |  ${f.issues_count || 0} issues`,
+            MARGIN + 8,
+            doc.y,
+            { lineBreak: false, width: contentWidth - 16, ellipsis: true }
           );
-          doc.y += 11;
+          doc.y += 12;
         });
-        doc.y += 8;
+        doc.y += 4;
       }
 
       // ==========================================
       // SECTION 3: DETAILED FINDINGS & REMEDIATIONS
       // ==========================================
-      doc.fillColor('#111111').font('Helvetica-Bold').fontSize(12).text(`Detailed Findings (${issues.length})`, 40, doc.y);
-      doc.rect(40, doc.y + 4, contentWidth, 1).fill('#E0E0E0');
-      doc.y += 14;
+      doc.fillColor('#111111').font('Helvetica-Bold').fontSize(11.5).text(`Detailed Findings (${issues.length})`, MARGIN, doc.y, { lineBreak: false });
+      doc.rect(MARGIN, doc.y + 14, contentWidth, 1).fill('#E0E0E0');
+      doc.y += 20;
 
       if (issues.length === 0) {
-        doc.fillColor('#2E7D32').font('Helvetica-Bold').fontSize(10.5).text('✓ Clean codebase. No high or medium vulnerabilities were discovered during static AST and Gemini analysis.', 45, doc.y);
-        doc.y += 24;
+        doc.fillColor('#2E7D32').font('Helvetica-Bold').fontSize(9.5).text(
+          '✓ Clean codebase. No high or medium vulnerabilities were discovered during static AST and Gemini analysis.',
+          MARGIN + 4,
+          doc.y,
+          { lineBreak: false }
+        );
+        doc.y += 20;
       } else {
         issues.forEach((issue, index) => {
-          // Check if space remains on page, otherwise add new page
-          if (doc.y > doc.page.height - 120) {
-            doc.addPage();
-            doc.y = 50;
-          }
-
           const sev = String(issue.severity || 'MEDIUM').toUpperCase().trim();
           const tagColor =
             sev === 'CRITICAL' ? '#D32F2F' : sev === 'HIGH' ? '#E65100' : sev === 'MEDIUM' ? '#F57F17' : '#0288D1';
@@ -227,82 +256,105 @@ function generateReviewPdf(reviewData = {}) {
           const diffBefore = issue.diff_before || '';
           const diffAfter = issue.diff_after || '';
 
+          // Truncate minified lines exceeding 120 chars to first 117 chars + "..."
+          const truncateLine = (l) => {
+            if (!l) return '';
+            return l.length > 120 ? l.slice(0, 117) + '...' : l;
+          };
+          const beforeLines = diffBefore ? diffBefore.split('\n').slice(0, 4).map(truncateLine).join('\n') : '';
+          const afterLines = diffAfter ? diffAfter.split('\n').slice(0, 4).map(truncateLine).join('\n') : '';
+          const diffBeforeHeight = beforeLines ? Math.min(48, 14 + beforeLines.split('\n').length * 9) : 0;
+          const diffAfterHeight = afterLines ? Math.min(48, 14 + afterLines.split('\n').length * 9) : 0;
+          
+          // Estimate total card height
+          const cardRequiredHeight = 44 + 20 + diffBeforeHeight + (diffBeforeHeight ? 4 : 0) + diffAfterHeight + (diffAfterHeight ? 4 : 0) + 10;
+
+          // If current card would spill past safe bottom, break page before starting this card
+          if (doc.y + cardRequiredHeight > safeBottomY && doc.y > MARGIN + 40) {
+            doc.addPage();
+            doc.y = MARGIN + 10;
+          }
+
           // Finding Title & Severity Pill
-          doc.fillColor(tagColor).font('Helvetica-Bold').fontSize(9).text(`[${sev}]`, 40, doc.y, { continued: true });
-          doc.fillColor('#111111').font('Helvetica-Bold').fontSize(10).text(`  ${index + 1}. ${title}`);
-          doc.y += 3;
+          doc.fillColor(tagColor).font('Helvetica-Bold').fontSize(8.5).text(`[${sev}]`, MARGIN, doc.y, { continued: true, lineBreak: false });
+          doc.fillColor('#111111').font('Helvetica-Bold').fontSize(9.5).text(`  ${index + 1}. ${title}`, { lineBreak: false });
+          doc.y += 12;
+
+          // Engine attribution: HYBRID (AST + AI) when corroborated
+          const engineAttr =
+            issue.engine ||
+            (String(issue.engine_source || issue.source || '').toUpperCase().includes('HYBRID')
+              ? 'HYBRID (AST + AI)'
+              : String(issue.engine_source || issue.source || '').toUpperCase().includes('GEMINI')
+              ? 'Gemini AI'
+              : 'Static AST');
 
           // Rule & Location Metadata
-          doc.fillColor('#666666').font('Helvetica').fontSize(8).text(
-            `Rule ID: ${ruleId}   |   Location: ${file} (Line ${line})   |   Engine: ${issue.engine_source || 'HYBRID'}`,
-            40,
-            doc.y
+          doc.fillColor('#666666').font('Helvetica').fontSize(7.5).text(
+            `Rule ID: ${ruleId}   |   Location: ${file} (Line ${line})   |   Engine: ${engineAttr}`,
+            MARGIN,
+            doc.y,
+            { lineBreak: false }
           );
-          doc.y += 5;
+          doc.y += 12;
 
           // Plain Language Explanation
-          doc.fillColor('#333333').font('Helvetica').fontSize(8.5).text(description, 40, doc.y, {
+          doc.fillColor('#333333').font('Helvetica').fontSize(8).text(description, MARGIN, doc.y, {
             width: contentWidth,
-            lineGap: 2,
+            lineGap: 1.5,
           });
           doc.y += 6;
 
-          // Code Diff Blocks
-          if (diffBefore) {
-            const beforeLines = diffBefore.split('\n').slice(0, 4).join('\n');
-            const boxH = Math.min(50, 14 + beforeLines.split('\n').length * 10);
-
-            if (doc.y + boxH > doc.page.height - 50) {
-              doc.addPage();
-              doc.y = 50;
-            }
-
-            doc.rect(40, doc.y, contentWidth, boxH).fill('#FFEBEE');
-            doc.rect(40, doc.y, 3, boxH).fill('#D32F2F');
-            doc.fillColor('#C62828').font('Helvetica-Bold').fontSize(7.5).text('VULNERABLE CODE (-)', 48, doc.y + 4);
-            doc.fillColor('#B71C1C').font('Courier').fontSize(8).text(beforeLines, 48, doc.y + 14, { width: contentWidth - 16 });
-            doc.y += boxH + 4;
+          // Code Diff Blocks (Render atomically inside card with truncation and ellipsis to prevent horizontal canvas overflow)
+          if (beforeLines) {
+            doc.rect(MARGIN, doc.y, contentWidth, diffBeforeHeight).fill('#FFEBEE');
+            doc.rect(MARGIN, doc.y, 3, diffBeforeHeight).fill('#D32F2F');
+            doc.fillColor('#C62828').font('Helvetica-Bold').fontSize(7).text('VULNERABLE CODE (-)', MARGIN + 8, doc.y + 3, { lineBreak: false });
+            doc.fillColor('#B71C1C').font('Courier').fontSize(7.5).text(beforeLines, MARGIN + 8, doc.y + 12, { width: contentWidth - 16, lineBreak: false, ellipsis: true });
+            doc.y += diffBeforeHeight + 4;
           }
 
-          if (diffAfter) {
-            const afterLines = diffAfter.split('\n').slice(0, 4).join('\n');
-            const boxH = Math.min(50, 14 + afterLines.split('\n').length * 10);
-
-            if (doc.y + boxH > doc.page.height - 50) {
-              doc.addPage();
-              doc.y = 50;
-            }
-
-            doc.rect(40, doc.y, contentWidth, boxH).fill('#E8F5E9');
-            doc.rect(40, doc.y, 3, boxH).fill('#2E7D32');
-            doc.fillColor('#2E7D32').font('Helvetica-Bold').fontSize(7.5).text('REMEDIATED FIX (+)', 48, doc.y + 4);
-            doc.fillColor('#1B5E20').font('Courier').fontSize(8).text(afterLines, 48, doc.y + 14, { width: contentWidth - 16 });
-            doc.y += boxH + 4;
+          if (afterLines) {
+            doc.rect(MARGIN, doc.y, contentWidth, diffAfterHeight).fill('#E8F5E9');
+            doc.rect(MARGIN, doc.y, 3, diffAfterHeight).fill('#2E7D32');
+            doc.fillColor('#2E7D32').font('Helvetica-Bold').fontSize(7).text('REMEDIATED FIX (+)', MARGIN + 8, doc.y + 3, { lineBreak: false });
+            doc.fillColor('#1B5E20').font('Courier').fontSize(7.5).text(afterLines, MARGIN + 8, doc.y + 12, { width: contentWidth - 16, lineBreak: false, ellipsis: true });
+            doc.y += diffAfterHeight + 4;
           }
 
-          doc.y += 8;
+          doc.y += 10;
         });
       }
 
       // ==========================================
-      // SECTION 4: PAGE NUMBERS & FOOTER ON ALL PAGES
+      // SECTION 4: SAFE DOCKED FOOTER (ZERO TRAILING PAGES)
       // ==========================================
       const range = doc.bufferedPageRange();
       for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
-        doc.rect(40, doc.page.height - 35, contentWidth, 0.5).fill('#CCCCCC');
-        doc.fillColor('#777777').font('Helvetica').fontSize(7.5).text(
-          '{ Re:Code } • Read. Review. Refine. | College Project by Shivam Vishwakarma | OWASP Top 10 Active',
-          40,
-          doc.page.height - 26,
-          { width: contentWidth - 80 }
+        
+        // Suppress bottom margin temporarily during footer rendering to strictly prevent PDFKit auto-addPage
+        const origBottomMargin = doc.page.margins.bottom;
+        doc.page.margins.bottom = 0;
+
+        const footerY = pageHeight - MARGIN + 8;
+        doc.rect(MARGIN, footerY - 8, contentWidth, 0.5).fill('#CCCCCC');
+        
+        doc.fillColor('#777777').font('Helvetica').fontSize(7).text(
+          '{ Re:Code } • Read. Review. Refine. | Comprehensive Quality & Reliability Report | OWASP Top 10 Active',
+          MARGIN,
+          footerY,
+          { width: contentWidth - 80, lineBreak: false, baseline: 'middle' }
         );
-        doc.fillColor('#777777').font('Helvetica').fontSize(7.5).text(
+
+        doc.fillColor('#777777').font('Helvetica').fontSize(7).text(
           `Page ${i + 1} of ${range.count}`,
-          pageWidth - 100,
-          doc.page.height - 26,
-          { width: 60, align: 'right' }
+          pageWidth - MARGIN - 60,
+          footerY,
+          { width: 60, align: 'right', lineBreak: false, baseline: 'middle' }
         );
+
+        doc.page.margins.bottom = origBottomMargin;
       }
 
       doc.end();

@@ -1,20 +1,22 @@
 import React, { useState } from 'react';
-import logoAsset from '../../assets/logo.svg';
+import logoPng from '../../assets/logo.png';
+import logoSvg from '../../assets/logo.svg';
 
 /**
  * BrandLogo: Bulletproof Re:Code logo component.
- * Uses Vite asset import with public path fallbacks and an inline SVG fallback
- * to guarantee that a broken image icon is never shown.
+ * Uses official SVG logo (/Logo.svg) with PNG and inline SVG fallbacks.
  */
-export default function BrandLogo({ className = 'h-7 w-auto', alt = 'Re:Code Logo' }) {
+export default function BrandLogo({ className = 'h-7 w-auto', alt = 'Re:Code Logo', src = '/Logo.svg' }) {
   const [loadFailed, setLoadFailed] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState(logoAsset);
+  const [currentSrc, setCurrentSrc] = useState(src || '/Logo.svg');
 
   const handleError = () => {
-    if (currentSrc === logoAsset) {
-      setCurrentSrc('/Logo.svg');
-    } else if (currentSrc === '/Logo.svg') {
-      setCurrentSrc('/logo.svg');
+    if (currentSrc === '/Logo.svg') {
+      setCurrentSrc(logoPng);
+    } else if (currentSrc === logoPng) {
+      setCurrentSrc('/logo.png');
+    } else if (currentSrc === '/logo.png') {
+      setCurrentSrc(logoSvg);
     } else {
       setLoadFailed(true);
     }

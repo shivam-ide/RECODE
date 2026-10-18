@@ -5,6 +5,8 @@ import Footer from '../components/common/Footer';
 import PillBadge from '../components/common/PillBadge';
 import BrandLogo from '../components/common/BrandLogo';
 
+import { API_BASE_URL } from '../config/api';
+
 export default function ReviewPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -17,7 +19,7 @@ export default function ReviewPage() {
     async function fetchReview() {
       try {
         setLoading(true);
-        const res = await fetch(`/api/v1/reviews/${id}`);
+        const res = await fetch(`${API_BASE_URL}/api/v1/reviews/${id}`);
         const data = await res.json();
         if (isMounted) {
           if (res.ok && data.data) {

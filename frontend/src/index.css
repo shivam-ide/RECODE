@@ -75,3 +75,83 @@ input:-webkit-autofill:active {
   line-height: 1.25rem;
 }
 
+/* =====================================================================
+   PRINT & PDF EXPORT STYLESHEET
+   Eliminates trailing blank pages, resets viewport heights, and avoids
+   awkward page breaks across finding cards and metrics.
+   ===================================================================== */
+@page {
+  size: A4;
+  margin: 16mm;
+}
+
+@media print {
+  /* Remove hardcoded viewport heights on print containers */
+  html,
+  body,
+  #root,
+  .recode-container,
+  main,
+  div[class*="min-h-screen"],
+  div[class*="min-h-"] {
+    min-height: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    background: #0F0F0F !important;
+    color: #F1F1F1 !important;
+    overflow: visible !important;
+  }
+
+  /* Hide interactive fixed navigation, modals, and sticky action docks */
+  header.fixed,
+  aside.sticky,
+  .no-print,
+  #issueFilterTabs,
+  .patch-apply-btn,
+  .copy-fix-btn,
+  button {
+    display: none !important;
+  }
+
+  /* Ensure main padding is adapted for printable layout */
+  main {
+    padding-top: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Prevent awkward page breaks on individual finding cards and metric blocks */
+  article,
+  .finding-card,
+  .metric-block,
+  .diff-viewer,
+  .recode-card {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    margin-bottom: 1rem !important;
+  }
+
+  /* Ensure the last section strictly avoids page breaks */
+  .audit-page-section:last-child {
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+    margin-bottom: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  /* Auto-remove empty trailing DOM elements */
+  :empty {
+    display: none !important;
+  }
+
+  /* Code diff snippet wrapping and word break (prevents horizontal overflow across canvas) */
+  .diff-viewer pre,
+  .diff-viewer code,
+  .diff-viewer-container pre,
+  .diff-viewer-container code,
+  pre, code {
+    word-break: break-all !important;
+    white-space: pre-wrap !important;
+    overflow-wrap: break-word !important;
+  }
+}
+

@@ -9,6 +9,8 @@
  * - Sorts final output strictly: CRITICAL -> HIGH -> MEDIUM -> LOW -> INFO.
  */
 
+const { generateStaticRemediationDiff } = require('./staticAnalyzer');
+
 const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 
 const SEVERITY_WEIGHTS = {
@@ -20,6 +22,23 @@ const SEVERITY_WEIGHTS = {
 };
 
 const VALID_CATEGORIES = ['SYNTAX', 'SECURITY', 'QUALITY', 'OPTIMIZATION'];
+
+/**
+ * Truncate long code snippet lines exceeding maxLen to first truncLen characters + '...'
+ * Prevents minified files and bundler outputs from overwhelming audit reports
+ *
+ * @param {string} str - Raw line or multi-line code snippet
+ * @param {number} [maxLen=150] - Threshold length
+ * @param {number} [truncLen=120] - Truncated length
+ * @returns {string} Truncated string
+ */
+function truncateSnippetLine(str, maxLen = 120, truncLen = 117) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .split('\n')
+    .map((line) => (line.length > maxLen ? line.slice(0, truncLen) + '...' : line))
+    .join('\n');
+}
 
 /**
  * Normalize and compare file paths across OS formats (Windows backslashes vs POSIX)
@@ -158,6 +177,97 @@ function sortFindingsBySeverity(findings) {
 }
 
 /**
+ * Enrich finding with structured plain language explanation (What, Why, How) and explicit scope
+ *
+ * @param {Object} item
+ * @returns {Object} Enriched finding item
+ */
+function enrichFindingDetails(item) {
+  const rule = String(item.ruleId || item.category || '').toUpperCase();
+  const line = item.line || item.lineNumber || 1;
+  const fileName = item.file || 'source.js';
+
+  let what = item.what || item.explanation || item.description || '';
+  let why = item.why || '';
+  let how = item.how || item.remediation || '';
+
+  // Reset how if it duplicates what, description, or title
+  if (
+    !how ||
+    how === what ||
+    how === item.description ||
+    how === item.explanation ||
+    how === item.title
+  ) {
+    how = '';
+  }
+
+  if (rule.includes('SQL')) {
+    what = what || 'User input is concatenated directly into a raw database SQL string instead of being passed as a parameterized placeholder.';
+    why = why || 'Attackers can manipulate the query structure to bypass authentication, exfiltrate sensitive database records, or drop tables (CWE-89 SQL Injection).';
+    how = how || 'Step 1: Never concatenate user inputs (`req.query.id`) directly into SQL query strings.\nStep 2: Use parameterized queries with placeholders (`$1, $2`).\nStep 3: Pass inputs safely via the query parameters array: `db.query(sqlQuery, [studentId, minGpa])`.';
+  } else if (rule.includes('SECRET') || rule.includes('KEY') || rule.includes('CREDENTIAL') || rule.includes('CWE-798')) {
+    what = what || 'A private credential, API secret, or JWT token is hardcoded in plaintext within the source code.';
+    why = why || 'Hardcoded secrets committed to version control can be extracted by unauthorized users, compromising infrastructure and data (CWE-798).';
+    how = how || 'Step 1: Install dotenv (`npm install dotenv`).\nStep 2: Create a root `.env` file and define `JWT_SECRET=your_secure_random_key`.\nStep 3: Replace the hardcoded string with `process.env.JWT_SECRET`.';
+  } else if (rule.includes('UNUSED')) {
+    what = what || 'A variable is declared in memory but is never referenced or read anywhere in the code scope.';
+    why = why || 'Dead code increases developer confusion, creates potential memory leaks, and may indicate incomplete business logic (CWE-563).';
+    how = how || 'Step 1: If this variable is unnecessary, delete line declaration.\nStep 2: If you intended to use it later in the file, reference it in your logic or export it.';
+  } else if (rule.includes('CONSOLE') || rule.includes('LOG')) {
+    what = what || 'A direct console.log() debugging statement is active in an application execution path.';
+    why = why || 'Console logging can leak private user information or tokens to stdout and degrades asynchronous I/O performance under load (CWE-532).';
+    how = how || 'Step 1: Remove debug statements before merging into production.\nStep 2: Use an enterprise logger (such as Winston or Pino) if runtime logging is required.';
+  } else if (rule.includes('CATCH')) {
+    what = what || 'An empty catch block is silently swallowing errors without logging or handling them.';
+    why = why || 'Silencing exceptions hides runtime failures, leaves application state corrupted, and makes production issues impossible to trace (CWE-390).';
+    how = how || 'Step 1: Log the caught error with `logger.error(err.message)`.\nStep 2: Either handle the failure gracefully or re-throw the exception.';
+  } else if (rule.includes('PARSER') || rule.includes('SYNTAX')) {
+    what = what || `Syntax error on line ${line}: Unexpected or missing compiler token.`;
+    why = why || 'The JavaScript/programming engine cannot parse the file, causing immediate runtime crashes on initialization.';
+    how = how || `Step 1: Inspect line ${line} for unclosed brackets, missing semicolons, or mismatched parentheses.\nStep 2: Add the required delimiter or closing token to properly terminate the block.`;
+  } else {
+    what = what || item.title || 'Code quality or security defect detected.';
+    why = why || 'Unresolved code issues increase vulnerability risk, degrade runtime performance, and add technical debt.';
+    how = how || item.remediation || 'Step 1: Review the affected code logic against secure development best practices.\nStep 2: Apply the recommended remediation diff patch below.';
+  }
+
+  // Ensure what and how are NEVER identical
+  if (how === what || !how) {
+    how = 'Step 1: Review the affected code logic against secure development best practices.\nStep 2: Apply the recommended remediation diff patch below.';
+  }
+
+  // Explicit engine label assignment
+  const sourceUpper = String(item.source || item.engine_source || item.engine || '').toUpperCase();
+  if (sourceUpper.includes('HYBRID')) {
+    item.engine = 'HYBRID (AST + AI)';
+    item.engine_source = 'HYBRID';
+    item.source = 'HYBRID';
+  } else if (sourceUpper.includes('GEMINI') || sourceUpper.includes('AI')) {
+    item.engine = 'Gemini AI';
+    item.engine_source = 'GEMINI';
+    item.source = 'GEMINI';
+  } else {
+    item.engine = 'Static AST';
+    item.engine_source = 'STATIC';
+    item.source = 'STATIC';
+  }
+
+  item.what = what;
+  item.what_is_wrong = what;
+  item.why = why;
+  item.why_dangerous = why;
+  item.how = how;
+  item.how_to_fix = how;
+  item.remediation = how;
+  item.line = line;
+  item.line_number = line;
+  item.lineNumber = line;
+  item.scope = `Line ${line} in ${fileName}`;
+  return item;
+}
+
+/**
  * Merge and deduplicate Static AST and Gemini AI findings
  *
  * @param {Array<Object>} [staticFindings=[]] - Output from static AST analyzer
@@ -249,6 +359,14 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       const targetFile = sFile || aItem.file || defaultFile;
       const resolvedSev = resolveSeverity(sItem.severity, aItem.severity);
 
+      const rawDiffBefore = aItem.diff_before || sItem.diff_before || sItem.evidence || '';
+      const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
+      let effectiveDiffAfter = aItem.diff_after || sItem.diff_after || '';
+      if (!effectiveDiffAfter) {
+        effectiveDiffAfter = generateStaticRemediationDiff(sItem.ruleId, effectiveDiffBefore);
+      }
+      effectiveDiffAfter = truncateSnippetLine(effectiveDiffAfter);
+
       // HYBRID finding: retain AST precise line number, adopt Gemini's explanation and diff patch
       merged.push({
         file: targetFile,
@@ -261,11 +379,12 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
         description: aItem.explanation || aItem.description || sItem.description || '',
         explanation: aItem.explanation || aItem.description || sItem.description || '',
         remediation: aItem.explanation || aItem.remediation || sItem.description || '',
-        diff_before: aItem.diff_before || sItem.evidence || '',
-        diff_after: aItem.diff_after || '',
-        evidence: sItem.evidence || aItem.diff_before || '',
+        diff_before: effectiveDiffBefore,
+        diff_after: effectiveDiffAfter,
+        evidence: truncateSnippetLine(sItem.evidence || aItem.diff_before || ''),
         source: 'HYBRID',
         engine_source: 'HYBRID',
+        engine: 'HYBRID (AST + AI)',
       });
     }
   }
@@ -278,6 +397,14 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
     const sLine = typeof sItem.line === 'number' ? sItem.line : sItem.lineNumber || 1;
     const targetFile = sItem.file || defaultFile;
 
+    const rawDiffBefore = sItem.diff_before || sItem.evidence || '';
+    const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
+    let effectiveDiffAfter = sItem.diff_after || '';
+    if (!effectiveDiffAfter) {
+      effectiveDiffAfter = generateStaticRemediationDiff(sItem.ruleId, effectiveDiffBefore);
+    }
+    effectiveDiffAfter = truncateSnippetLine(effectiveDiffAfter);
+
     merged.push({
       file: targetFile,
       line: sLine,
@@ -289,11 +416,12 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       description: sItem.description || sItem.title || '',
       explanation: sItem.description || sItem.title || '',
       remediation: sItem.remediation || sItem.description || '',
-      diff_before: sItem.evidence || '',
-      diff_after: sItem.diff_after || '',
-      evidence: sItem.evidence || '',
+      diff_before: effectiveDiffBefore,
+      diff_after: effectiveDiffAfter,
+      evidence: truncateSnippetLine(sItem.evidence || ''),
       source: 'STATIC',
       engine_source: 'STATIC',
+      engine: 'Static AST',
     });
   }
 
@@ -304,6 +432,22 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
     const aItem = safeAi[aIdx];
     const aLine = typeof aItem.line === 'number' ? aItem.line : aItem.lineNumber || 1;
     const targetFile = aItem.file || defaultFile;
+
+    const rawDiffBefore = aItem.diff_before || '';
+    const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
+    let effectiveDiffAfter = aItem.diff_after || '';
+    if (
+      effectiveDiffAfter &&
+      effectiveDiffAfter.includes('SELECT * FROM students') &&
+      !String(aItem.title || '').toLowerCase().includes('sql') &&
+      !String(aItem.ruleId || '').toUpperCase().includes('SQL')
+    ) {
+      effectiveDiffAfter = generateStaticRemediationDiff(aItem.ruleId || aItem.category, effectiveDiffBefore);
+    }
+    if (!effectiveDiffAfter) {
+      effectiveDiffAfter = generateStaticRemediationDiff(aItem.ruleId || aItem.category, effectiveDiffBefore);
+    }
+    effectiveDiffAfter = truncateSnippetLine(effectiveDiffAfter);
 
     merged.push({
       file: targetFile,
@@ -316,32 +460,115 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       description: aItem.explanation || aItem.description || aItem.title || '',
       explanation: aItem.explanation || aItem.description || aItem.title || '',
       remediation: aItem.explanation || aItem.remediation || '',
-      diff_before: aItem.diff_before || '',
-      diff_after: aItem.diff_after || '',
-      evidence: aItem.diff_before || '',
+      diff_before: effectiveDiffBefore,
+      diff_after: effectiveDiffAfter,
+      evidence: truncateSnippetLine(aItem.diff_before || ''),
       source: 'GEMINI',
       engine_source: 'GEMINI',
+      engine: 'Gemini AI',
     });
   }
 
-  // 4. Strict deduplication pass over merged items
-  const finalSeen = new Set();
-  const deduplicated = [];
-
+  // 4. Strict line-level deduplication: merge competing findings on the same line
+  const lineGroups = new Map();
   for (const item of merged) {
-    const normFile = String(item.file || 'snippet').replace(/\\/g, '/').toLowerCase();
+    const normFile = String(item.file || defaultFile).replace(/\\/g, '/').toLowerCase();
     const line = item.line || 1;
-    const rule = item.ruleId || item.category || 'ISSUE';
-    const title = String(item.title || '').trim().toLowerCase();
-    const key = `${normFile}:${line}:${rule}:${title}`;
+    const groupKey = `${normFile}:${line}`;
+    if (!lineGroups.has(groupKey)) {
+      lineGroups.set(groupKey, []);
+    }
+    lineGroups.get(groupKey).push(item);
+  }
 
-    if (finalSeen.has(key)) continue;
-    finalSeen.add(key);
-    deduplicated.push(item);
+  const resolved = [];
+  for (const [, items] of lineGroups.entries()) {
+    if (items.length === 1) {
+      resolved.push(enrichFindingDetails(items[0]));
+      continue;
+    }
+
+    const secretItem = items.find(
+      (i) => (i.ruleId || '').includes('SECRET') || (i.title || '').toLowerCase().includes('secret')
+    );
+    const unusedItem = items.find(
+      (i) => (i.ruleId || '').includes('UNUSED') || (i.title || '').toLowerCase().includes('unused')
+    );
+    const sqlItem = items.find(
+      (i) => (i.ruleId || '').includes('SQL') || (i.title || '').toLowerCase().includes('sql')
+    );
+
+    if (secretItem && unusedItem) {
+      // Merge into a single CRITICAL card as requested:
+      // "Hardcoded Secret (Variable is also unused). Do not commit secrets in source code."
+      secretItem.title = 'Hardcoded Secret (Variable is also unused)';
+      secretItem.severity = 'CRITICAL';
+      secretItem.what = 'Hardcoded Secret (Variable is also unused). Do not commit secrets in source code.';
+      secretItem.description = 'Hardcoded Secret (Variable is also unused). Do not commit secrets in source code.';
+      secretItem.explanation = 'Hardcoded Secret (Variable is also unused). Do not commit secrets in source code.';
+      secretItem.why = 'Hardcoded secrets committed to version control can be extracted by unauthorized users, compromising infrastructure and data (CWE-798).';
+      secretItem.how = 'Step 1: Install dotenv (`npm install dotenv`).\nStep 2: Create a root `.env` file and define `JWT_SECRET=your_secure_random_key`.\nStep 3: Replace the hardcoded string with `process.env.JWT_SECRET`.';
+      secretItem.how_to_fix = secretItem.how;
+      if (
+        unusedItem.source === 'HYBRID' ||
+        secretItem.source === 'HYBRID' ||
+        unusedItem.engine_source === 'HYBRID' ||
+        secretItem.engine_source === 'HYBRID' ||
+        (unusedItem.source === 'GEMINI' && secretItem.source === 'STATIC') ||
+        (unusedItem.source === 'STATIC' && secretItem.source === 'GEMINI')
+      ) {
+        secretItem.source = 'HYBRID';
+        secretItem.engine_source = 'HYBRID';
+        secretItem.engine = 'HYBRID (AST + AI)';
+      }
+      resolved.push(enrichFindingDetails(secretItem));
+      continue;
+    }
+
+    if (sqlItem && unusedItem) {
+      sqlItem.title = 'SQL Injection Vulnerability (Query variable is also unused)';
+      sqlItem.severity = 'CRITICAL';
+      sqlItem.description = `${sqlItem.description} (Note: This query variable is also declared but unused).`;
+      if (
+        unusedItem.source === 'HYBRID' ||
+        sqlItem.source === 'HYBRID' ||
+        unusedItem.engine_source === 'HYBRID' ||
+        sqlItem.engine_source === 'HYBRID' ||
+        (unusedItem.source === 'GEMINI' && sqlItem.source === 'STATIC') ||
+        (unusedItem.source === 'STATIC' && sqlItem.source === 'GEMINI')
+      ) {
+        sqlItem.source = 'HYBRID';
+        sqlItem.engine_source = 'HYBRID';
+        sqlItem.engine = 'HYBRID (AST + AI)';
+      }
+      resolved.push(enrichFindingDetails(sqlItem));
+      continue;
+    }
+
+    // General deduplication on same line: sort by severity, keep highest, merge engine info
+    items.sort((a, b) => (SEVERITY_WEIGHTS[a.severity] || 99) - (SEVERITY_WEIGHTS[b.severity] || 99));
+    const primary = items[0];
+    const secondary = items.slice(1);
+    if (primary.ruleId === 'PARSER_ERROR' || primary.category === 'SYNTAX') {
+      primary.source = 'STATIC';
+      primary.engine_source = 'STATIC';
+      primary.engine = 'Static AST';
+    } else if (
+      primary.source === 'HYBRID' ||
+      primary.engine_source === 'HYBRID' ||
+      secondary.some((s) => s.source === 'HYBRID' || s.engine_source === 'HYBRID') ||
+      (primary.source === 'STATIC' && secondary.some((s) => s.source === 'GEMINI')) ||
+      (primary.source === 'GEMINI' && secondary.some((s) => s.source === 'STATIC'))
+    ) {
+      primary.source = 'HYBRID';
+      primary.engine_source = 'HYBRID';
+      primary.engine = 'HYBRID (AST + AI)';
+    }
+    resolved.push(enrichFindingDetails(primary));
   }
 
   // 5. Sort final output: CRITICAL -> HIGH -> MEDIUM -> LOW -> INFO
-  return sortFindingsBySeverity(deduplicated);
+  return sortFindingsBySeverity(resolved);
 }
 
 module.exports = {

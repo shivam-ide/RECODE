@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { validateDirectSnippet, validateGitHubUrl } = require('../utils/validators');
 const { resolveDnsAndValidate } = require('../middleware/security');
-const { ingestRepository } = require('./github/ingestionManager');
+const { ingestRepository } = require('./ingestion/githubIngestion');
 const { analyzeFile } = require('./analysis/staticAnalyzer');
 const { reviewCodeWithGemini } = require('./ai/aiReviewer');
 const { mergeAndDeduplicate } = require('./analysis/findingsNormalizer');
@@ -192,55 +192,80 @@ async function executeReviewPipeline({
   }
 
   // --------------------------------------------------------------------------
-  // STEP 3: Run Static AST Analyzer Across All Files
+  // --------------------------------------------------------------------------
+  // STEP 3 & 4: Concurrently Run Static AST Analyzer & Gemini AI Review
   // --------------------------------------------------------------------------
   const allStaticFindings = [];
   const fileStaticMap = new Map();
 
+  // Task A: In-memory AST Static Analysis across all candidate files
   for (const file of candidateFiles) {
     const findings = analyzeFile(file.path, file.content, file.language);
     fileStaticMap.set(file.path, findings);
     allStaticFindings.push(...findings);
   }
 
-  // --------------------------------------------------------------------------
-  // STEP 4: Run Gemini AI Review (or Fallback to Partial Analysis Mode)
-  // --------------------------------------------------------------------------
-  const allAiFindings = [];
-  let overallPartialMode = false;
-  let partialModeReason = null;
+  // Task B: Google Gemini AI Semantic Review Engine (Executed across all discovered files in controlled batches)
+  const runAiEngine = async () => {
+    const aiFindings = [];
+    let partialMode = false;
+    let reason = null;
 
-  if (options.skipAi) {
-    overallPartialMode = true;
-    partialModeReason = 'SKIPPED_BY_OPTIONS';
-  } else {
-    for (const file of candidateFiles) {
-      const fileStaticFindings = fileStaticMap.get(file.path) || [];
-      const hasSyntaxError = fileStaticFindings.some(
-        (f) => f.ruleId === 'PARSER_ERROR' || f.category === 'SYNTAX'
-      );
+    if (options.skipAi) {
+      return { partialMode: true, reason: 'SKIPPED_BY_OPTIONS', findings: [] };
+    }
 
-      const aiResult = await reviewCodeWithGemini({
-        filePath: file.path,
-        codeContent: file.content,
-        language: file.language,
-        staticFindings: fileStaticFindings,
-        hasSyntaxError,
-        timeoutMs: options.timeoutMs,
-        model: options.model,
-        client: options.aiClient,
+    const aiTargetFiles = candidateFiles.slice(0, 15);
+    const aiBatchSize = 3;
+    let aiSuccessCount = 0;
+
+    for (let i = 0; i < aiTargetFiles.length; i += aiBatchSize) {
+      const batch = aiTargetFiles.slice(i, i + aiBatchSize);
+      const batchPromises = batch.map(async (file) => {
+        const fileStaticFindings = fileStaticMap.get(file.path) || [];
+        const hasSyntaxError = fileStaticFindings.some(
+          (f) => f.ruleId === 'PARSER_ERROR' || f.category === 'SYNTAX'
+        );
+
+        return reviewCodeWithGemini({
+          filePath: file.path,
+          codeContent: file.content,
+          language: file.language,
+          staticFindings: fileStaticFindings,
+          hasSyntaxError,
+          timeoutMs: options.timeoutMs,
+          model: options.model,
+          client: options.aiClient,
+        });
       });
 
-      if (aiResult.partialMode) {
-        overallPartialMode = true;
-        partialModeReason = aiResult.reason || 'AI_UNAVAILABLE';
+      const batchResults = await Promise.all(batchPromises);
+      for (const aiResult of batchResults) {
+        if (!aiResult.partialMode) {
+          aiSuccessCount++;
+        } else {
+          reason = aiResult.reason || 'AI_UNAVAILABLE';
+        }
+        if (Array.isArray(aiResult.findings)) {
+          aiFindings.push(...aiResult.findings);
+        }
       }
 
-      if (Array.isArray(aiResult.findings)) {
-        allAiFindings.push(...aiResult.findings);
+      // Small throttle pause between batches to adhere to Gemini API rate limits (15 RPM)
+      if (i + aiBatchSize < aiTargetFiles.length) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
     }
-  }
+
+    partialMode = aiSuccessCount === 0 && candidateFiles.length > 0;
+    return { partialMode, reason, findings: aiFindings };
+  };
+
+  const aiExecution = await runAiEngine();
+
+  const allAiFindings = aiExecution.findings || [];
+  const overallPartialMode = aiExecution.partialMode || false;
+  const partialModeReason = aiExecution.reason || null;
 
   // --------------------------------------------------------------------------
   // STEP 5: Merge, Deduplicate, and Normalize Findings
@@ -266,7 +291,7 @@ async function executeReviewPipeline({
   // --------------------------------------------------------------------------
   const reviewId = crypto.randomUUID();
 
-  // File level summaries
+  // File level summaries with source content for in-memory patching
   const fileSummaries = candidateFiles.map((f) => {
     const fileIssues = mergedIssues.filter((i) => i.file === f.path);
     return {
@@ -274,6 +299,7 @@ async function executeReviewPipeline({
       file_path: f.path,
       language: f.language,
       linesCount: f.lines || 0,
+      content: f.content || '',
       issuesCount: fileIssues.length,
     };
   });

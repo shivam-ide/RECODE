@@ -48,6 +48,20 @@ const RULES = {
     title: 'Console Log Left in Production Code',
     cwe: 'CWE-532',
   },
+  DOM_XSS: {
+    ruleId: 'DOM_XSS',
+    severity: 'MEDIUM',
+    category: 'SECURITY',
+    title: 'DOM-based Cross-Site Scripting (CWE-79)',
+    cwe: 'CWE-79',
+  },
+  INSECURE_TARGET_BLANK: {
+    ruleId: 'INSECURE_TARGET_BLANK',
+    severity: 'LOW',
+    category: 'SECURITY',
+    title: 'Reverse Tabnabbing via target="_blank" (CWE-1022)',
+    cwe: 'CWE-1022',
+  },
 };
 
 /**
@@ -121,6 +135,195 @@ function formatParserErrorRemediation(err, line, evidence = '') {
   return `Syntax Error: Line ${line} has a syntax failure (${clean || 'Parser Error'}). Correct the syntax around line ${line}.`;
 }
 
+/**
+ * Truncate long code snippet lines exceeding maxLen to first truncLen characters + '...'
+ * Prevents minified files and bundler outputs from overwhelming audit reports
+ *
+ * @param {string} str - Raw line or multi-line code snippet
+ * @param {number} [maxLen=150] - Threshold length
+ * @param {number} [truncLen=120] - Truncated length
+ * @returns {string} Truncated string
+ */
+function truncateSnippetLine(str, maxLen = 150, truncLen = 120) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .split('\n')
+    .map((line) => (line.length > maxLen ? line.slice(0, truncLen) + '...' : line))
+    .join('\n');
+}
+
+/**
+ * Educational step-by-step remediation guide for static findings
+ *
+ * @param {string} ruleId - Target rule identifier
+ * @returns {string} Step-by-step remediation guide
+ */
+function getRuleStepByStepRemediation(ruleId) {
+  const rule = String(ruleId || '').toUpperCase();
+  if (rule.includes('UNUSED')) {
+    return 'Step 1: If this variable is unnecessary, delete line declaration.\nStep 2: If you intended to use it later in the file, reference it in your logic or export it.';
+  }
+  if (rule.includes('SECRET') || rule.includes('CREDENTIAL') || rule.includes('KEY') || rule.includes('CWE-798')) {
+    return 'Step 1: Install dotenv (`npm install dotenv`).\nStep 2: Create a root `.env` file and define `JWT_SECRET=your_secure_random_key`.\nStep 3: Replace the hardcoded string with `process.env.JWT_SECRET`.';
+  }
+  if (rule.includes('SQL')) {
+    return 'Step 1: Never concatenate user inputs (`req.query.id`) directly into SQL query strings.\nStep 2: Use parameterized queries with placeholders (`$1, $2`).\nStep 3: Pass inputs safely via the query parameters array: `db.query(sqlQuery, [studentId, minGpa])`.';
+  }
+  if (rule.includes('CONSOLE') || rule.includes('LOG')) {
+    return 'Step 1: Remove debug statements before merging into production.\nStep 2: Use an enterprise logger (such as Winston or Pino) if runtime logging is required.';
+  }
+  if (rule.includes('CATCH')) {
+    return 'Step 1: Log the caught error with `logger.error(err.message)`.\nStep 2: Either handle the failure gracefully or re-throw the exception.';
+  }
+  return 'Step 1: Review the affected code logic against secure development best practices.\nStep 2: Apply the recommended remediation diff patch below.';
+}
+
+/**
+ * Contextual diff remediation generator for static AST findings
+ *
+ * @param {string} ruleId - Target rule identifier
+ * @param {string} evidence - Exact line from submitted source file
+ * @param {string} [language='javascript'] - Programming language
+ * @returns {string} Remediated safe line(s)
+ */
+function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javascript') {
+  const line = (evidence || '').trim();
+  const rule = (ruleId || '').toUpperCase();
+
+  // 1. UNUSED_VARIABLE
+  if (rule.includes('UNUSED')) {
+    return '// Removed unused variable';
+  }
+
+  // 2. HARDCODED_SECRET (CWE-798)
+  if (rule.includes('SECRET') || rule.includes('CREDENTIAL') || rule.includes('KEY')) {
+    const varMatch = line.match(/(?:const|let|var|String|final\s+String)?\s*([a-zA-Z0-9_$]+)\s*[:=]/);
+    const varName = varMatch ? varMatch[1] : 'JWT_SECRET';
+    const envVar = varName.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+
+    if (language === 'python') {
+      return `import os\n${varName} = os.environ.get("${envVar}") or (_ for _ in ()).throw(RuntimeError("${envVar} missing in .env"))`;
+    }
+    if (language === 'java') {
+      return `String ${varName} = Optional.ofNullable(System.getenv("${envVar}")).orElseThrow(() -> new IllegalStateException("${envVar} missing in .env"));`;
+    }
+    if (language === 'cpp') {
+      return `const char* ${varName} = std::getenv("${envVar}");\nif (!${varName}) throw std::runtime_error("${envVar} missing in .env");`;
+    }
+    return `const ${varName} = process.env.${envVar} || (() => { throw new Error("${envVar} missing in .env"); })();`;
+  }
+
+  // 3. CONSOLE_LOG_STMT / CONSOLE_LOG_STATEMENT
+  if (rule.includes('CONSOLE') || rule.includes('LOG')) {
+    return '// logger.info(...) or remove before production';
+  }
+
+  // 4. SQL_INJECTION (CWE-89)
+  if (rule.includes('SQL')) {
+    const varNames = [];
+    const templateMatches = [...line.matchAll(/\$\{([a-zA-Z0-9_$.]+)\}/g)];
+    for (const m of templateMatches) {
+      if (m[1]) varNames.push(m[1].trim());
+    }
+    if (varNames.length === 0) {
+      const fMatches = [...line.matchAll(/\{([a-zA-Z0-9_]+)\}/g)];
+      for (const m of fMatches) {
+        if (m[1]) varNames.push(m[1].trim());
+      }
+    }
+    if (varNames.length === 0) {
+      const concatMatches = [...line.matchAll(/\+\s*([a-zA-Z0-9_$.]+)/g)];
+      for (const m of concatMatches) {
+        const name = m[1].trim();
+        if (!/^(true|false|null|undefined|\d+|std)$/i.test(name)) {
+          varNames.push(name.replace(/^std::to_string\((.+)\)$/, '$1'));
+        }
+      }
+    }
+
+    if (language === 'python') {
+      let replaced = line;
+      let paramCount = 0;
+      for (const v of varNames) {
+        replaced = replaced.replace(new RegExp(`['"]?\\{${v}\\}['"]?`, 'g'), '%s');
+        paramCount++;
+      }
+      if (paramCount === 0) {
+        replaced = replaced.replace(/\+\s*[a-zA-Z0-9_$.]+/g, '%s');
+      }
+      const tupleVars = varNames.length === 1 ? `(${varNames[0]},)` : `(${varNames.join(', ')})`;
+      return `${replaced}\n# cursor.execute(query, ${tupleVars})`;
+    }
+
+    if (language === 'java' || language === 'cpp') {
+      let replaced = line;
+      for (const v of varNames) {
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}\\s*\\+\\s*['"]`, 'g'), '?');
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}`, 'g'), '?"');
+        replaced = replaced.replace(new RegExp(`\\+\\s*std::to_string\\(${v}\\)`, 'g'), '?"');
+      }
+      const paramsList = varNames.length > 0 ? varNames.join(', ') : 'param1, param2';
+      return `${replaced}\n// Parameterized prepared statement bindings: [${paramsList}]`;
+    }
+
+    // JavaScript / TypeScript ($1, $2 placeholders)
+    let paramIndex = 1;
+    let replaced = line;
+
+    if (templateMatches.length > 0) {
+      replaced = line.replace(/`([^`]*)`/, (match, sqlContent) => {
+        let inner = sqlContent;
+        for (const v of varNames) {
+          inner = inner.replace(new RegExp(`'\\s*\\$\\{${v}\\}\\s*'`, 'g'), `$${paramIndex}`);
+          inner = inner.replace(new RegExp(`\\$\\{${v}\\}`, 'g'), `$${paramIndex}`);
+          paramIndex++;
+        }
+        return `"${inner};"`;
+      });
+    } else if (line.includes('+')) {
+      for (const v of varNames) {
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}\\s*\\+\\s*['"]`, 'g'), `$${paramIndex}`);
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}`, 'g'), `$${paramIndex}"`);
+        paramIndex++;
+      }
+      replaced = replaced.replace(/["']\s*;\s*$/, ';"');
+    } else {
+      replaced = `${line.replace(/;?$/, '')} /* parameterized */`;
+    }
+
+    const paramsList = varNames.length > 0 ? varNames.join(', ') : 'param1, param2';
+    return `${replaced}\n// const rows = await db.query(query, [${paramsList}]);`;
+  }
+
+  // 5. EMPTY_CATCH_BLOCK
+  if (rule.includes('CATCH')) {
+    return '} catch (error) {\n  logger.error("Operation failed:", error);\n  throw error;\n}';
+  }
+
+  // 6. DOM_XSS (CWE-79) via innerHTML
+  if (rule.includes('DOM_XSS') || rule.includes('INNERHTML')) {
+    if (line.includes('.innerHTML')) {
+      return line.replace(/\.innerHTML\s*=/, '.textContent =');
+    }
+    return '// Use element.textContent instead of innerHTML to prevent DOM XSS';
+  }
+
+  // 7. INSECURE_TARGET_BLANK
+  if (rule.includes('TARGET_BLANK') || rule.includes('TABNABBING')) {
+    if (/target\s*=\s*["']_blank["']/i.test(line)) {
+      return line.replace(/(target\s*=\s*["']_blank["'])/i, '$1 rel="noopener noreferrer"');
+    }
+    return 'rel="noopener noreferrer"';
+  }
+
+  // 8. PARSER_ERROR
+  if (rule.includes('PARSER') || rule.includes('SYNTAX')) {
+    return line ? `${line} // Corrected syntax token` : '// Close block or statement';
+  }
+
+  return '// Refactored safe code block';
+}
+
 
 /**
  * Resolve target programming language
@@ -159,6 +362,9 @@ function resolveLanguage(filePath = '', explicitLanguage = '') {
     case '.h':
     case '.hpp':
       return 'cpp';
+    case '.html':
+    case '.htm':
+      return 'html';
     case '.js':
     case '.jsx':
     case '.mjs':
@@ -307,12 +513,22 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
   const rawFindings = [];
   const seenIssues = new Set();
 
-  function addFinding({ line, column = 1, ruleId, severity, category, title, description, remediation }) {
+  function addFinding({ line, column = 1, ruleId, severity, category, title, description, remediation, diff_before, diff_after }) {
     const dedupeKey = `${ruleId}:${line}`;
     if (seenIssues.has(dedupeKey)) return;
     seenIssues.add(dedupeKey);
 
-    const evidence = (codeLines[line - 1] || '').trim();
+    const rawEvidence = (codeLines[line - 1] || '').trim();
+    const evidence = truncateSnippetLine(rawEvidence);
+    const rawDiffBefore = diff_before || rawEvidence;
+    const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
+    const rawDiffAfter = diff_after !== undefined ? diff_after : generateStaticRemediationDiff(ruleId, rawDiffBefore, language);
+    const effectiveDiffAfter = truncateSnippetLine(rawDiffAfter);
+    const effectiveRemediation =
+      remediation && remediation !== description
+        ? remediation
+        : getRuleStepByStepRemediation(ruleId);
+
     rawFindings.push({
       file: filePath || '<anonymous>',
       line,
@@ -323,8 +539,12 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
       ruleId,
       title,
       description,
-      remediation: remediation || description,
+      remediation: effectiveRemediation,
+      how: effectiveRemediation,
+      how_to_fix: effectiveRemediation,
       evidence,
+      diff_before: effectiveDiffBefore,
+      diff_after: effectiveDiffAfter,
       source: 'STATIC',
     });
   }
@@ -559,8 +779,24 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
       }
     },
 
-    // Hardcoded Secrets in AssignmentExpressions (e.g. config.api_key = "...")
+    // Hardcoded Secrets & DOM XSS in AssignmentExpressions
     AssignmentExpression(path) {
+      // DOM XSS: element.innerHTML = ...
+      if (
+        path.node.left.type === 'MemberExpression' &&
+        path.node.left.property &&
+        (path.node.left.property.name === 'innerHTML' || path.node.left.property.value === 'innerHTML')
+      ) {
+        addFinding({
+          line: path.node.loc.start.line,
+          ruleId: RULES.DOM_XSS.ruleId,
+          severity: RULES.DOM_XSS.severity,
+          category: RULES.DOM_XSS.category,
+          title: RULES.DOM_XSS.title,
+          description: 'Direct assignment to element.innerHTML creates a DOM-based Cross-Site Scripting (CWE-79) vulnerability. Use element.textContent or sanitize dynamic values.',
+        });
+      }
+
       let identifierName = '';
       if (path.node.left.type === 'Identifier') {
         identifierName = path.node.left.name;
@@ -660,10 +896,21 @@ function analyzeNonJsSource(filePath, codeContent, language) {
   const findings = [];
   const seenIssues = new Set();
 
-  function addFinding({ line, ruleId, severity, category, title, description, remediation }) {
+  function addFinding({ line, ruleId, severity, category, title, description, remediation, diff_before, diff_after }) {
     const dedupeKey = `${ruleId}:${line}`;
     if (seenIssues.has(dedupeKey)) return;
     seenIssues.add(dedupeKey);
+
+    const rawEvidence = (codeLines[line - 1] || '').trim();
+    const evidence = truncateSnippetLine(rawEvidence);
+    const rawDiffBefore = diff_before || rawEvidence;
+    const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
+    const rawDiffAfter = diff_after !== undefined ? diff_after : generateStaticRemediationDiff(ruleId, rawDiffBefore, language);
+    const effectiveDiffAfter = truncateSnippetLine(rawDiffAfter);
+    const effectiveRemediation =
+      remediation && remediation !== description
+        ? remediation
+        : getRuleStepByStepRemediation(ruleId);
 
     findings.push({
       file: filePath || '<anonymous>',
@@ -675,8 +922,12 @@ function analyzeNonJsSource(filePath, codeContent, language) {
       ruleId,
       title,
       description,
-      remediation: remediation || description,
-      evidence: (codeLines[line - 1] || '').trim(),
+      remediation: effectiveRemediation,
+      how: effectiveRemediation,
+      how_to_fix: effectiveRemediation,
+      evidence,
+      diff_before: effectiveDiffBefore,
+      diff_after: effectiveDiffAfter,
       source: 'STATIC',
     });
   }
@@ -894,6 +1145,73 @@ function analyzeNonJsSource(filePath, codeContent, language) {
 }
 
 /**
+ * Analyze HTML files for script vulnerabilities, reverse tabnabbing, and insecure markup
+ */
+function analyzeHtmlSource(filePath, codeContent) {
+  const codeLines = (codeContent || '').split(/\r\n|\r|\n/);
+  const findings = [];
+
+  const addFinding = (item) => {
+    const rule = RULES[item.ruleId] || {};
+    findings.push({
+      file: filePath,
+      line: item.line || 1,
+      severity: item.severity || rule.severity || 'MEDIUM',
+      category: item.category || rule.category || 'SECURITY',
+      ruleId: item.ruleId || 'HTML_SECURITY',
+      title: item.title || rule.title || 'HTML Security Flaw',
+      description: item.description,
+      evidence: codeLines[item.line - 1] || '',
+      source: 'STATIC',
+    });
+  };
+
+  // 1. Line-by-line checks for insecure markup
+  for (let i = 0; i < codeLines.length; i++) {
+    const line = codeLines[i];
+    const lineNum = i + 1;
+
+    // Check target="_blank" without rel="noopener"
+    if (/target\s*=\s*["']_blank["']/i.test(line) && !/rel\s*=\s*["'][^"']*(noopener|noreferrer)[^"']*["']/i.test(line)) {
+      addFinding({
+        line: lineNum,
+        ruleId: RULES.INSECURE_TARGET_BLANK.ruleId,
+        severity: RULES.INSECURE_TARGET_BLANK.severity,
+        category: RULES.INSECURE_TARGET_BLANK.category,
+        title: RULES.INSECURE_TARGET_BLANK.title,
+        description: 'External link opens in new tab (target="_blank") without rel="noopener noreferrer". This exposes the page to reverse tabnabbing and window.opener hijacking.',
+      });
+    }
+  }
+
+  // 2. Extract and analyze embedded <script> tags
+  const scriptRegex = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRegex.exec(codeContent)) !== null) {
+    const scriptBody = match[1];
+    if (scriptBody && scriptBody.trim().length > 0) {
+      const precedingText = codeContent.substring(0, match.index);
+      const startLine = precedingText.split(/\r\n|\r|\n/).length;
+
+      try {
+        const scriptFindings = analyzeJavaScriptAst(filePath, scriptBody, 'javascript');
+        for (const sf of scriptFindings) {
+          findings.push({
+            ...sf,
+            line: (startLine + sf.line - 1),
+            evidence: codeLines[(startLine + sf.line - 2)] || sf.evidence,
+          });
+        }
+      } catch {
+        // Ignore syntax issues in partial inline templates
+      }
+    }
+  }
+
+  return findings.sort((a, b) => a.line - b.line);
+}
+
+/**
  * Main Static AST Code Analyzer
  *
  * @param {string} filePath - Path or filename of target source file
@@ -914,6 +1232,10 @@ function analyzeFile(filePath, codeContent, language) {
 
   if (resolvedLang === 'javascript' || resolvedLang === 'typescript') {
     return analyzeJavaScriptAst(filePath, codeContent, resolvedLang);
+  }
+
+  if (resolvedLang === 'html') {
+    return analyzeHtmlSource(filePath, codeContent);
   }
 
   return analyzeNonJsSource(filePath, codeContent, resolvedLang);
@@ -941,4 +1263,5 @@ module.exports = {
   resolveLanguage,
   analyzeFile,
   analyzeFiles,
+  generateStaticRemediationDiff,
 };

@@ -23,12 +23,13 @@ export default function DiffViewer({
 }) {
   const [internalCopied, setInternalCopied] = useState(false);
 
-  // Sanitize both diff branches
+  // Sanitize both diff branches and truncate lines exceeding 120 characters
   const safeBefore = sanitizeCodeSnippet(diffBefore);
   const safeAfter = sanitizeCodeSnippet(diffAfter);
 
-  const beforeLines = safeBefore.split('\n');
-  const afterLines = safeAfter.split('\n');
+  const truncateLine = (line) => (line && line.length > 120 ? line.slice(0, 117) + '...' : line);
+  const beforeLines = safeBefore.split('\n').map(truncateLine);
+  const afterLines = safeAfter.split('\n').map(truncateLine);
 
   const handleCopy = (e) => {
     if (onCopy) {
@@ -53,12 +54,17 @@ export default function DiffViewer({
           </span>
           <span className="text-[#717171]">• Diff View: Vulnerable vs Remediation</span>
         </span>
-        {patchReady && (
+        {isApplied ? (
+          <span className="text-[#27C93F] font-medium text-[11px] flex items-center gap-1">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            Patch Applied In-Memory
+          </span>
+        ) : patchReady ? (
           <span className="text-[#02C8F0] font-medium text-[11px] flex items-center gap-1">
             <Sparkles className="w-3.5 h-3.5" />
             1-Click Patch Available
           </span>
-        )}
+        ) : null}
       </div>
 
       {/* Diff Content Lines Container */}
@@ -73,8 +79,8 @@ export default function DiffViewer({
               {lineNumber + bIdx}
             </span>
             <span className="w-4 select-none font-bold text-[#FF4D4D] shrink-0">-</span>
-            {/* Semantic text container: pre & code guarantees safe text node rendering without XSS */}
-            <pre className="m-0 p-0 inline font-mono font-semibold whitespace-pre overflow-x-auto text-[#FF9999]">
+            {/* Semantic text container: pre & code with word-break break-all and white-space pre-wrap */}
+            <pre className="m-0 p-0 inline font-mono font-semibold whitespace-pre-wrap break-all overflow-x-auto text-[#FF9999]">
               <code>{lineText}</code>
             </pre>
           </div>
@@ -90,68 +96,13 @@ export default function DiffViewer({
               {lineNumber + aIdx}
             </span>
             <span className="w-4 select-none font-bold text-[#27C93F] shrink-0">+</span>
-            {/* Semantic text container: pre & code guarantees safe text node rendering without XSS */}
-            <pre className="m-0 p-0 inline font-mono font-semibold whitespace-pre overflow-x-auto text-[#86EFAC]">
+            {/* Semantic text container: pre & code with word-break break-all and white-space pre-wrap */}
+            <pre className="m-0 p-0 inline font-mono font-semibold whitespace-pre-wrap break-all overflow-x-auto text-[#86EFAC]">
               <code>{lineText}</code>
             </pre>
           </div>
         ))}
       </div>
-
-      {/* Action Toolbar (if callbacks or ruleId provided) */}
-      {(onApply || onCopy || ruleId) && (
-        <div className="bg-[#141414] border-t border-[#303030] px-3 py-2 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            {onApply && (
-              <button
-                type="button"
-                onClick={onApply}
-                className={`patch-apply-btn flex items-center gap-1.5 px-2.5 py-1 font-bold rounded font-mono text-[11px] transition-colors cursor-pointer ${
-                  isApplied
-                    ? 'bg-[#27C93F] text-[#0F0F0F]'
-                    : 'bg-[#02C8F0] hover:bg-[#38D4F4] text-[#0F0F0F]'
-                }`}
-              >
-                {isApplied ? (
-                  <>
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Patch Applied</span>
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-3.5 h-3.5 fill-current" />
-                    <span>Apply Patch</span>
-                  </>
-                )}
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="copy-fix-btn flex items-center gap-1.5 px-2.5 py-1 bg-[#212121] border border-[#303030] hover:bg-[#272727] text-[#F1F1F1] rounded font-mono text-[11px] transition-colors cursor-pointer"
-            >
-              {internalCopied ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-[#02C8F0]" />
-                  <span className="text-[#02C8F0]">Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copy Fix</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {ruleId && (
-            <span className="font-mono text-[11px] text-[#717171]">
-              Rule: {ruleId}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }

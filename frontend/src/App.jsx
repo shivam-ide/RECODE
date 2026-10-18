@@ -6,6 +6,8 @@ import ReviewDashboardPage from './pages/ReviewDashboardPage';
 import HistoryPage from './pages/HistoryPage';
 import ComponentPreview from './views/ComponentPreview';
 
+import { API_BASE_URL } from './config/api';
+
 function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [backendLoading, setBackendLoading] = useState(false);
@@ -13,7 +15,7 @@ function App() {
   const checkBackendHealth = async () => {
     setBackendLoading(true);
     try {
-      const response = await fetch('/api/v1/health');
+      const response = await fetch(`${API_BASE_URL}/api/v1/health`);
       const data = await response.json();
       setBackendStatus(data);
     } catch (err) {

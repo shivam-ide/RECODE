@@ -23,6 +23,8 @@ import BrandLogo from '../components/common/BrandLogo';
 import { UserSessionPill } from '../components/common';
 import { useAuth } from '../services/useAuth';
 
+import { API_BASE_URL } from '../config/api';
+
 // Standard fallback mock audits matching 'last page.html' template
 const INITIAL_DEMO_AUDITS = [
   {
@@ -130,7 +132,7 @@ export default function HistoryPage() {
           headers['x-user-id'] = currentUser.id;
         }
 
-        const res = await fetch('/api/v1/reviews/history', { headers });
+        const res = await fetch(`${API_BASE_URL}/api/v1/reviews/history`, { headers });
         if (res.ok) {
           const body = await res.json();
           if (isMounted && body.success && Array.isArray(body.data)) {
@@ -234,7 +236,7 @@ export default function HistoryPage() {
         headers['x-user-id'] = currentUser.id;
       }
 
-      await fetch(`/api/v1/reviews/${auditId}`, {
+      await fetch(`${API_BASE_URL}/api/v1/reviews/${auditId}`, {
         method: 'DELETE',
         headers,
       });
@@ -261,7 +263,7 @@ export default function HistoryPage() {
         headers['x-user-id'] = currentUser.id;
       }
 
-      const res = await fetch(`/api/v1/reviews/${row.id}/pdf`, { headers });
+      const res = await fetch(`${API_BASE_URL}/api/v1/reviews/${row.id}/pdf`, { headers });
       if (!res.ok) {
         throw new Error(`PDF endpoint returned HTTP ${res.status}`);
       }

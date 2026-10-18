@@ -2,9 +2,14 @@
  * Re:Code — Health Scoring & Grading Engine
  *
  * Evaluates normalized code audit findings and calculates deterministic project health metrics:
- * - Weighted severity penalties: CRITICAL (20), HIGH (10), MEDIUM (5), LOW (2), INFO (0).
- * - Enforces minimum HIGH penalty (10 pts) for syntax errors or unparsed files.
- * - Strict grading scale: A+ (97-100), A (90-96), B+ (80-89), B (70-79), C (60-69), D (50-59), F (<50).
+ * - Weighted severity penalties:
+ *   * CRITICAL: 20 pts each (urgent vulnerabilities)
+ *   * HIGH: 10 pts each (architectural / logic flaws)
+ *   * MEDIUM: 3 pts each, capped at 20 pts project total
+ *   * LOW: 0.5 pts each, capped at 15 pts project total (prevents excessive minor notices like console.logs from failing audit)
+ *   * INFO: 0 pts (advisory recommendations)
+ * - Zero Critical & Zero High Guarantee: Codebases with 0 Critical and 0 High issues never drop below Grade C (min score 70).
+ * - Syntax Failure Penalty: Code with unparsed syntax errors incurs 30 pts penalty and is capped at Grade C (score 70).
  * - Multi-dimensional category health percentages: bugsHealth, securityHealth, qualityHealth, optimizationHealth.
  * - Provides transparent deduction breakdown for frontend diagnostics.
  */
@@ -12,9 +17,16 @@
 const PENALTY_WEIGHTS = {
   CRITICAL: 20,
   HIGH: 10,
-  MEDIUM: 5,
-  LOW: 2,
+  MEDIUM: 3,
+  LOW: 0.5,
   INFO: 0,
+};
+
+const SEVERITY_CAPS = {
+  LOW: 15,
+  MEDIUM: 20,
+  HIGH: 100,
+  CRITICAL: 100,
 };
 
 const GRADE_THRESHOLDS = [
@@ -105,14 +117,6 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
     INFO: 0,
   };
 
-  const severityDeductions = {
-    CRITICAL: 0,
-    HIGH: 0,
-    MEDIUM: 0,
-    LOW: 0,
-    INFO: 0,
-  };
-
   const categoryCounts = {
     SYNTAX: 0,
     SECURITY: 0,
@@ -120,17 +124,16 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
     OPTIMIZATION: 0,
   };
 
-  const categoryDeductions = {
+  const categoryRawPenalties = {
     SYNTAX: 0,
     SECURITY: 0,
     QUALITY: 0,
     OPTIMIZATION: 0,
   };
 
-  let totalDeductions = 0;
   let hasSyntaxError = !!opts.hasSyntaxError || (typeof opts.unparsedFiles === 'number' && opts.unparsedFiles > 0);
 
-  // 1. Process and tally finding penalties
+  // 1. Process finding counts and raw category deductions
   for (const item of findings) {
     if (!item || typeof item !== 'object') continue;
 
@@ -147,15 +150,52 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
     const penalty = Number.isFinite(PENALTY_WEIGHTS[severity]) ? PENALTY_WEIGHTS[severity] : 0;
 
     severityCounts[severity]++;
-    severityDeductions[severity] += penalty;
-
     categoryCounts[category]++;
-    categoryDeductions[category] += penalty;
-
-    totalDeductions += penalty;
+    categoryRawPenalties[category] += penalty;
   }
 
-  // 2. Syntax compilation failures: Deduct at least 30 points (and cap max score at 70 / Grade C)
+  // 2. Apply Capping per Severity Level
+  // - CRITICAL: 20 pts each (uncapped up to 100)
+  // - HIGH: 10 pts each (uncapped up to 100)
+  // - MEDIUM: 3 pts each, capped at 20 pts
+  // - LOW: 0.5 pts each, capped at 15 pts
+  const rawCriticalDeduction = severityCounts.CRITICAL * PENALTY_WEIGHTS.CRITICAL;
+  const rawHighDeduction = severityCounts.HIGH * PENALTY_WEIGHTS.HIGH;
+  const rawMediumDeduction = severityCounts.MEDIUM * PENALTY_WEIGHTS.MEDIUM;
+  const rawLowDeduction = severityCounts.LOW * PENALTY_WEIGHTS.LOW;
+
+  const severityDeductions = {
+    CRITICAL: rawCriticalDeduction,
+    HIGH: rawHighDeduction,
+    MEDIUM: Math.min(SEVERITY_CAPS.MEDIUM, rawMediumDeduction),
+    LOW: Math.min(SEVERITY_CAPS.LOW, rawLowDeduction),
+    INFO: 0,
+  };
+
+  let totalDeductions =
+    severityDeductions.CRITICAL +
+    severityDeductions.HIGH +
+    severityDeductions.MEDIUM +
+    severityDeductions.LOW;
+
+  // Scale category deductions so sum aligns with total capped deductions
+  const rawTotalPenalties = rawCriticalDeduction + rawHighDeduction + rawMediumDeduction + rawLowDeduction;
+  const categoryDeductions = {
+    SYNTAX: 0,
+    SECURITY: 0,
+    QUALITY: 0,
+    OPTIMIZATION: 0,
+  };
+
+  if (rawTotalPenalties > 0 && totalDeductions > 0) {
+    const scaleFactor = totalDeductions / rawTotalPenalties;
+    categoryDeductions.SYNTAX = Math.round(categoryRawPenalties.SYNTAX * scaleFactor);
+    categoryDeductions.SECURITY = Math.round(categoryRawPenalties.SECURITY * scaleFactor);
+    categoryDeductions.QUALITY = Math.round(categoryRawPenalties.QUALITY * scaleFactor);
+    categoryDeductions.OPTIMIZATION = Math.round(categoryRawPenalties.OPTIMIZATION * scaleFactor);
+  }
+
+  // 3. Syntax compilation failures: Deduct at least 30 points (and cap max score at 70 / Grade C)
   const SYNTAX_PENALTY = 30;
   if (hasSyntaxError) {
     if (categoryDeductions.SYNTAX < SYNTAX_PENALTY) {
@@ -165,28 +205,38 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
     }
   }
 
-  // Ensure totalDeductions is finite
-  const safeDeductions = Number.isFinite(totalDeductions) ? totalDeductions : 0;
+  // 4. Compute final health score clamped strictly to [0, 100]
+  let rawScore = Math.max(0, Math.min(100, Math.round(100 - totalDeductions)));
 
-  // 3. Compute final health score clamped strictly to [0, 100], and capped at 70 if hasSyntaxError
-  const rawScore = Math.max(0, Math.min(100, Math.round(100 - safeDeductions)));
+  // "A project with 0 Critical and 0 High issues MUST NEVER drop below Grade C (minimum score 70)."
+  if (severityCounts.CRITICAL === 0 && severityCounts.HIGH === 0) {
+    rawScore = Math.max(70, rawScore);
+  }
+
   const finalScore = hasSyntaxError ? Math.min(70, rawScore) : rawScore;
 
-  // 4. Grade resolution: Broken code with syntax error CANNOT be given Grade A, A+, B+, or B
+  // 5. Grade resolution:
+  // - Code with 0 Critical and 0 High issues cannot drop below Grade C
+  // - Broken code with syntax error cannot be given Grade A, A+, B+, or B
   let grade = getGrade(finalScore);
+  if (severityCounts.CRITICAL === 0 && severityCounts.HIGH === 0) {
+    if (grade === 'D' || grade === 'F') {
+      grade = 'C';
+    }
+  }
   if (hasSyntaxError) {
     if (grade === 'A+' || grade === 'A' || grade === 'B+' || grade === 'B') {
       grade = 'C';
     }
   }
 
-  // 5. Calculate category health percentages (strictly clamped to [0, 100]%)
-  const bugsHealth = Math.max(0, Math.min(100, Math.round(100 - (Number.isFinite(categoryDeductions.SYNTAX) ? categoryDeductions.SYNTAX : 0))));
-  const securityHealth = Math.max(0, Math.min(100, Math.round(100 - (Number.isFinite(categoryDeductions.SECURITY) ? categoryDeductions.SECURITY : 0))));
-  const qualityHealth = Math.max(0, Math.min(100, Math.round(100 - (Number.isFinite(categoryDeductions.QUALITY) ? categoryDeductions.QUALITY : 0))));
-  const optimizationHealth = Math.max(0, Math.min(100, Math.round(100 - (Number.isFinite(categoryDeductions.OPTIMIZATION) ? categoryDeductions.OPTIMIZATION : 0))));
+  // 6. Calculate category health percentages (strictly clamped to [0, 100]%)
+  const bugsHealth = Math.max(0, Math.min(100, Math.round(100 - categoryDeductions.SYNTAX)));
+  const securityHealth = Math.max(0, Math.min(100, Math.round(100 - categoryDeductions.SECURITY)));
+  const qualityHealth = Math.max(0, Math.min(100, Math.round(100 - categoryDeductions.QUALITY)));
+  const optimizationHealth = Math.max(0, Math.min(100, Math.round(100 - categoryDeductions.OPTIMIZATION)));
 
-  // 6. Build human-readable explanations array for UI inspection
+  // 7. Build human-readable explanations array for UI inspection
   const explanations = [];
 
   if (hasSyntaxError) {
@@ -205,13 +255,15 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
     );
   }
   if (severityCounts.MEDIUM > 0) {
+    const isCapped = rawMediumDeduction > SEVERITY_CAPS.MEDIUM;
     explanations.push(
-      `-${severityDeductions.MEDIUM} pts: ${severityCounts.MEDIUM} MEDIUM issue(s) (-${PENALTY_WEIGHTS.MEDIUM} pts each)`
+      `-${severityDeductions.MEDIUM} pts: ${severityCounts.MEDIUM} MEDIUM issue(s) (-${PENALTY_WEIGHTS.MEDIUM} pts each${isCapped ? `, capped at ${SEVERITY_CAPS.MEDIUM} pts max` : ''})`
     );
   }
   if (severityCounts.LOW > 0) {
+    const isCapped = rawLowDeduction > SEVERITY_CAPS.LOW;
     explanations.push(
-      `-${severityDeductions.LOW} pts: ${severityCounts.LOW} LOW issue(s) (-${PENALTY_WEIGHTS.LOW} pts each)`
+      `-${severityDeductions.LOW} pts: ${severityCounts.LOW} LOW issue(s) (-${PENALTY_WEIGHTS.LOW} pts each${isCapped ? `, capped at ${SEVERITY_CAPS.LOW} pts max` : ''})`
     );
   }
   if (severityCounts.INFO > 0) {
@@ -261,11 +313,13 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
           count: severityCounts.MEDIUM,
           deduction: severityDeductions.MEDIUM,
           penaltyPerIssue: PENALTY_WEIGHTS.MEDIUM,
+          cap: SEVERITY_CAPS.MEDIUM,
         },
         LOW: {
           count: severityCounts.LOW,
           deduction: severityDeductions.LOW,
           penaltyPerIssue: PENALTY_WEIGHTS.LOW,
+          cap: SEVERITY_CAPS.LOW,
         },
         INFO: {
           count: severityCounts.INFO,
@@ -302,6 +356,7 @@ function calculateScore(findingsOrOptions, totalLines = 0, filesCount = 1, optio
 
 module.exports = {
   PENALTY_WEIGHTS,
+  SEVERITY_CAPS,
   GRADE_THRESHOLDS,
   getGrade,
   calculateScore,

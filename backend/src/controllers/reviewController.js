@@ -261,6 +261,7 @@ async function downloadReviewReadme(req, res, next) {
 
 module.exports = {
   runCodeReview,
+  runReview: runCodeReview,
   getReviewDetails,
   getReviewHistoryController,
   deleteReview,

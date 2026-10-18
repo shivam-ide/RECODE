@@ -15,6 +15,7 @@ import {
   Code2,
   User,
   Clock,
+  X,
 } from 'lucide-react';
 import Footer from '../components/common/Footer';
 import BrandLogo from '../components/common/BrandLogo';
@@ -22,20 +23,127 @@ import { DiffViewer, UserSessionPill } from '../components/common';
 import { GUEST_SESSION_STORAGE_KEY } from '../services/supabaseAuth';
 import { useAuth } from '../services/useAuth';
 
+import { API_BASE_URL } from '../config/api';
+
 /**
  * Format raw compiler messages into human-readable remediation text for syntax error cards
  */
 function formatSyntaxRemediationText(raw, lineNum) {
   if (!raw) {
-    return `Syntax Error: Line ${lineNum} has an unclosed condition or parenthesis. Close the condition with ')' before opening the code block.`;
+    return `Line ${lineNum} has an unclosed condition or parenthesis. Close the condition with ')' before opening the code block.`;
   }
   if (/expected\s*['"]?\)/i.test(raw) || /unexpected token.*expected\s*\)/i.test(raw)) {
-    return `Syntax Error: Line ${lineNum} has an unclosed condition or parenthesis. Close the condition with ')' before opening the code block.`;
+    return `Line ${lineNum} has an unclosed condition or parenthesis. Close the condition with ')' before opening the code block.`;
   }
   if (/expected\s*['"]?\}/i.test(raw) || /missing.*closing brace/i.test(raw)) {
-    return `Syntax Error: Line ${lineNum} has an unclosed code block. Add a closing brace '}' to properly terminate the block.`;
+    return `Line ${lineNum} has an unclosed code block. Add a closing brace '}' to properly terminate the block.`;
   }
   return raw;
+}
+
+/**
+ * Robust client-side contextual diff generator
+ * Ensures no issue EVER displays an irrelevant SQL query
+ */
+function getIssueDiff(issue, activeFile) {
+  const truncateLine = (l) => (l && l.length > 150 ? l.slice(0, 120) + '...' : l);
+  const cleanSnippet = (str) => (str ? str.split('\n').map(truncateLine).join('\n') : '');
+  const wrap = (res) => ({ diffBefore: cleanSnippet(res.diffBefore), diffAfter: cleanSnippet(res.diffAfter) });
+
+  const lineNum = issue.line_number || issue.line || 1;
+  const ruleId = (issue.rule_id || issue.ruleId || '').toUpperCase();
+  const title = (issue.title || '').toLowerCase();
+  const desc = (issue.description || '').toLowerCase();
+
+  const isSql = ruleId.includes('SQL') || title.includes('sql') || desc.includes('sql') || (issue.cwe || '').includes('89');
+  const hasGenericSqlDiff = (issue.diff_after || '').includes('SELECT * FROM students WHERE campus = $1');
+
+  // If issue has valid diff_before and diff_after and it's not the generic SQL query on non-SQL issue
+  if (issue.diff_before && issue.diff_after && (!hasGenericSqlDiff || isSql)) {
+    return wrap({
+      diffBefore: issue.diff_before,
+      diffAfter: issue.diff_after,
+    });
+  }
+
+  // Find line content from activeFile if available
+  let sourceLine = issue.diff_before || issue.evidence || '';
+  if (!sourceLine && activeFile?.content) {
+    const lines = activeFile.content.split('\n');
+    if (lines[lineNum - 1]) {
+      sourceLine = lines[lineNum - 1].trim();
+    }
+  }
+
+  // 1. UNUSED_VARIABLE
+  if (ruleId.includes('UNUSED') || title.includes('unused') || desc.includes('unused')) {
+    const varMatch = (sourceLine || '').match(/(?:const|let|var)\s+([A-Za-z0-9_$]+)/);
+    const varName = varMatch ? varMatch[1] : (issue.evidence || 'unusedVar');
+    return wrap({
+      diffBefore: sourceLine || `const ${varName} = require('some-module');`,
+      diffAfter: `// Removed unused variable '${varName}'`,
+    });
+  }
+
+  // 2. HARDCODED_SECRET (CWE-798)
+  if (
+    ruleId.includes('SECRET') ||
+    ruleId.includes('PASSWORD') ||
+    ruleId.includes('CWE-798') ||
+    title.includes('secret') ||
+    title.includes('token') ||
+    desc.includes('secret') ||
+    desc.includes('jwt') ||
+    title.includes('jwt')
+  ) {
+    const varMatch = (sourceLine || '').match(/(?:const|let|var)\s+([A-Za-z0-9_$]+)/);
+    const varName = varMatch ? varMatch[1] : 'JWT_SECRET';
+    return wrap({
+      diffBefore: sourceLine || `const ${varName} = "shhh_jwt_secret_dev_key";`,
+      diffAfter: `const ${varName} = process.env.${varName} || (() => { throw new Error("${varName} missing in .env"); })();`,
+    });
+  }
+
+  // 3. CONSOLE_LOG_STATEMENT
+  if (ruleId.includes('CONSOLE') || ruleId.includes('LOG') || title.includes('console.log') || desc.includes('console.log')) {
+    return wrap({
+      diffBefore: sourceLine || `console.log("Debug payload:", req.body);`,
+      diffAfter: `// logger.info("Debug payload:", req.body) or remove before production`,
+    });
+  }
+
+  // 4. SQL_INJECTION (CWE-89)
+  if (isSql) {
+    const varMatches = (sourceLine || '').match(/[A-Za-z0-9_]+(?=\s*\+)|req\.(?:query|body|params)\.[A-Za-z0-9_]+/g) || ['campusId', 'gradeThreshold'];
+    const placeholders = varMatches.map((_, i) => `$${i + 1}`).join(' AND ');
+    const params = varMatches.join(', ');
+    return wrap({
+      diffBefore: sourceLine || `const query = "SELECT * FROM students WHERE campus = '" + campusId + "' AND gpa >= " + gradeThreshold;`,
+      diffAfter: `const query = "SELECT * FROM students WHERE campus = $1 AND gpa >= $2;";\nconst rows = await pool.query(query, [${params}]);`,
+    });
+  }
+
+  // 5. EMPTY_CATCH_BLOCK
+  if (ruleId.includes('EMPTY_CATCH') || title.includes('empty catch') || desc.includes('empty catch')) {
+    return wrap({
+      diffBefore: sourceLine || `} catch (err) {}`,
+      diffAfter: `} catch (err) {\n  logger.error("Operation failed", { error: err.message });\n  throw err;\n}`,
+    });
+  }
+
+  // 6. PARSER_ERROR / SYNTAX
+  if (ruleId.includes('PARSER') || ruleId.includes('SYNTAX') || title.includes('syntax') || desc.includes('syntax')) {
+    return wrap({
+      diffBefore: sourceLine || `// Incomplete code block at line ${lineNum}`,
+      diffAfter: sourceLine ? `${sourceLine} // Fix syntax or add closing delimiter` : `// Resolved syntax error at line ${lineNum}`,
+    });
+  }
+
+  // 7. General fallback
+  return wrap({
+    diffBefore: sourceLine || issue.diff_before || `// Code issue at line ${lineNum}`,
+    diffAfter: issue.remediation ? `// Fix: ${issue.remediation}` : `// Remediation applied for ${issue.title || 'finding'}`,
+  });
 }
 
 export default function ReviewDashboardPage() {
@@ -58,8 +166,38 @@ export default function ReviewDashboardPage() {
 
   // Interactive UI state
   const [appliedPatches, setAppliedPatches] = useState({}); // { [issueId]: true }
+  const [allSafeFixesApplied, setAllSafeFixesApplied] = useState(false);
+  const [healthScoreBonus, setHealthScoreBonus] = useState(0);
   const [copiedIssueId, setCopiedIssueId] = useState(null);
   const [exportNotice, setExportNotice] = useState(null);
+  const [showRawCodeModal, setShowRawCodeModal] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  // In-memory file content tracking: { [filePath]: string }
+  const [fileContents, setFileContents] = useState(() => {
+    const map = {};
+    const files = location.state?.review?.files || [];
+    for (const f of files) {
+      const p = f.file_path || f.path;
+      if (p && f.content) map[p] = f.content;
+    }
+    return map;
+  });
+
+  useEffect(() => {
+    if (review?.files) {
+      setFileContents((prev) => {
+        const next = { ...prev };
+        for (const f of review.files) {
+          const p = f.file_path || f.path;
+          if (p && f.content && !next[p]) {
+            next[p] = f.content;
+          }
+        }
+        return next;
+      });
+    }
+  }, [review]);
 
   // Fetch Review Data
   useEffect(() => {
@@ -85,7 +223,7 @@ export default function ReviewDashboardPage() {
           }
         }
 
-        const res = await fetch(`/api/v1/reviews/${id}`, { headers });
+        const res = await fetch(`${API_BASE_URL}/api/v1/reviews/${id}`, { headers });
 
         const json = await res.json();
 
@@ -126,17 +264,21 @@ export default function ReviewDashboardPage() {
   }, [id]);
 
   // Derived metrics and properties
-  const healthScore = review?.healthScore ?? review?.health_score ?? 84;
-  const grade = review?.grade || (healthScore >= 90 ? 'A' : healthScore >= 80 ? 'B+' : healthScore >= 70 ? 'B' : 'C');
+  const baseHealthScore = review?.healthScore ?? review?.health_score ?? 84;
+  const healthScore = Math.min(100, baseHealthScore + healthScoreBonus);
+  const grade = review?.grade && healthScoreBonus === 0 ? review.grade : (healthScore >= 90 ? 'A' : healthScore >= 80 ? 'B+' : healthScore >= 70 ? 'B' : 'C');
   const projectName = review?.projectName || review?.project_name || 'Code Review';
   const allFiles = useMemo(
     () => review?.files || review?.review_files || [],
     [review?.files, review?.review_files]
   );
-  const allIssues = useMemo(
-    () => review?.issues || review?.review_issues || [],
-    [review?.issues, review?.review_issues]
-  );
+  const allIssues = useMemo(() => {
+    const raw = review?.issues || review?.review_issues || [];
+    return raw.map((issue, index) => ({
+      ...issue,
+      _key: issue.id || issue._id || `${issue.file || 'f'}_${issue.line || issue.line_number || 1}_${issue.rule_id || issue.ruleId || 'rule'}_${index}`,
+    }));
+  }, [review?.issues, review?.review_issues]);
 
   const reviewedDate = useMemo(() => {
     const ts = review?.createdAt || review?.created_at || '2026-10-16T12:00:00Z';
@@ -168,11 +310,13 @@ export default function ReviewDashboardPage() {
     review?.categoryScores?.quality_health ??
     (medCount > 0 ? Math.max(0, 100 - medCount * 5) : 100);
 
-  // Has syntax errors or incomplete code
-  const hasSyntaxError =
-    review?.partialMode ||
-    review?.partial_mode ||
-    allIssues.some((i) => i.rule_id === 'PARSER_ERROR' || i.ruleId === 'PARSER_ERROR');
+  // Has syntax errors or incomplete code (strictly rendered only when syntax errors or parser warnings exist)
+  const hasSyntaxError = allIssues.some(
+    (item) =>
+      (item.category || '').toUpperCase() === 'SYNTAX' ||
+      item.rule_id === 'PARSER_ERROR' ||
+      item.ruleId === 'PARSER_ERROR'
+  );
 
   // Currently selected file object
   const activeFile = useMemo(() => {
@@ -242,18 +386,176 @@ export default function ReviewDashboardPage() {
   const circumference = 2 * Math.PI * circleRadius;
   const strokeOffset = circumference * (1 - Math.min(100, Math.max(0, healthScore)) / 100);
 
-  // Interactive: Apply Patch
-  const handleApplyPatch = (issueId) => {
+  // Active file content with in-memory patches applied
+  const activeFilePath = activeFile?.file_path || activeFile?.path || '';
+  const activeFileContent =
+    fileContents[activeFilePath] ??
+    activeFile?.content ??
+    '';
+
+  // Interactive: Apply Patch (toggles button and in-memory replaces code line)
+  const handleApplyPatch = (issueKey, issue) => {
+    // 1. Mark patch applied (turns button green with checkmark)
     setAppliedPatches((prev) => ({
       ...prev,
-      [issueId]: true,
+      [issueKey]: true,
     }));
+
+    // Dynamic health score boost (+2 per applied patch, up to 15 max)
+    setHealthScoreBonus((prev) => Math.min(15, prev + 2));
+
+    // 2. In-memory replace the vulnerable code line with the remediated line
+    const targetFilePath =
+      activeFile?.file_path || activeFile?.path || issue?.file || issue?.filePath || 'source.js';
+
+    const { diffBefore, diffAfter } = getIssueDiff(issue, activeFile);
+
+    setFileContents((prev) => {
+      const currentCode = prev[targetFilePath] ?? activeFile?.content ?? '';
+      if (!currentCode) return prev;
+
+      let updatedCode = currentCode;
+      if (diffBefore && currentCode.includes(diffBefore)) {
+        updatedCode = currentCode.replace(diffBefore, diffAfter);
+      } else {
+        const lineNum = issue?.line_number || issue?.line;
+        if (lineNum) {
+          const lines = currentCode.split('\n');
+          if (lines[lineNum - 1] !== undefined) {
+            lines[lineNum - 1] = diffAfter;
+            updatedCode = lines.join('\n');
+          }
+        }
+      }
+
+      return {
+        ...prev,
+        [targetFilePath]: updatedCode,
+      };
+    });
+
+    // Also update review.files in state
+    setReview((prev) => {
+      if (!prev) return prev;
+      const files = prev.files || prev.review_files || [];
+      const updatedFiles = files.map((f) => {
+        const fPath = f.file_path || f.path;
+        if (fPath === targetFilePath) {
+          const prevContent = f.content || '';
+          let newContent = prevContent;
+          if (diffBefore && prevContent.includes(diffBefore)) {
+            newContent = prevContent.replace(diffBefore, diffAfter);
+          } else {
+            const lineNum = issue?.line_number || issue?.line;
+            if (lineNum) {
+              const lines = prevContent.split('\n');
+              if (lines[lineNum - 1] !== undefined) {
+                lines[lineNum - 1] = diffAfter;
+                newContent = lines.join('\n');
+              }
+            }
+          }
+          return { ...f, content: newContent };
+        }
+        return f;
+      });
+      return { ...prev, files: updatedFiles };
+    });
+  };
+
+  // Interactive: Apply All Safe Fixes (unused variables, console logs, non-critical / low / info issues)
+  const handleApplyAllSafeFixes = () => {
+    const safeIssues = allIssues.filter((i) => {
+      const sev = (i.severity || '').toUpperCase();
+      const rule = (i.rule_id || i.ruleId || '').toUpperCase();
+      return (
+        sev === 'LOW' ||
+        sev === 'INFO' ||
+        rule.includes('UNUSED') ||
+        rule.includes('CONSOLE') ||
+        rule.includes('LOG')
+      );
+    });
+
+    const newPatches = { ...appliedPatches };
+    for (const issue of safeIssues) {
+      if (issue._key) newPatches[issue._key] = true;
+      if (issue.id) newPatches[issue.id] = true;
+      if (issue._id) newPatches[issue._id] = true;
+    }
+
+    // Group safe issues by target file
+    const issuesByFile = {};
+    for (const issue of safeIssues) {
+      const filePath = issue.file || issue.filePath || activeFile?.file_path || activeFile?.path || 'source.js';
+      if (!issuesByFile[filePath]) {
+        issuesByFile[filePath] = [];
+      }
+      issuesByFile[filePath].push(issue);
+    }
+
+    const updatedContents = { ...fileContents };
+
+    for (const [filePath, fileIssues] of Object.entries(issuesByFile)) {
+      let code =
+        updatedContents[filePath] ??
+        activeFile?.content ??
+        review?.files?.find((f) => (f.file_path || f.path) === filePath)?.content ??
+        '';
+      if (!code) continue;
+
+      // Sort descending by line number (bottom to top) to prevent line offset shifts
+      const sortedIssues = [...fileIssues].sort((a, b) => {
+        const lineA = Number(a.line_number || a.line || 0);
+        const lineB = Number(b.line_number || b.line || 0);
+        return lineB - lineA;
+      });
+
+      for (const issue of sortedIssues) {
+        const { diffBefore, diffAfter } = getIssueDiff(issue, activeFile);
+        if (diffBefore && code.includes(diffBefore)) {
+          code = code.replace(diffBefore, diffAfter);
+        } else {
+          const lineNum = issue?.line_number || issue?.line;
+          if (lineNum) {
+            const lines = code.split('\n');
+            if (lines[lineNum - 1] !== undefined) {
+              lines[lineNum - 1] = diffAfter;
+              code = lines.join('\n');
+            }
+          }
+        }
+      }
+      updatedContents[filePath] = code;
+    }
+
+    setAppliedPatches(newPatches);
+    setFileContents(updatedContents);
+    setAllSafeFixesApplied(true);
+    setHealthScoreBonus((prev) => Math.min(15, prev + Math.max(5, Math.min(10, safeIssues.length * 3))));
+
+    setReview((prev) => {
+      if (!prev) return prev;
+      const files = prev.files || prev.review_files || [];
+      const updatedFiles = files.map((f) => {
+        const fPath = f.file_path || f.path;
+        if (updatedContents[fPath]) {
+          return { ...f, content: updatedContents[fPath] };
+        }
+        return f;
+      });
+      return { ...prev, files: updatedFiles };
+    });
+
+    setExportNotice(`Applied safe remediation patches for ${safeIssues.length} issues in-memory.`);
+    setTimeout(() => setExportNotice(null), 3500);
   };
 
   // Interactive: Copy Fix
   const handleCopyFix = (issue, e) => {
     e.stopPropagation();
-    const fixContent = issue.diff_after || issue.remediation || issue.description || '';
+    const { diffAfter } = getIssueDiff(issue, activeFile);
+    const fixContent = diffAfter || issue.diff_after || issue.remediation || issue.description || '';
     if (navigator.clipboard) {
       navigator.clipboard.writeText(fixContent);
       setCopiedIssueId(issue.id || issue.title);
@@ -281,7 +583,7 @@ export default function ReviewDashboardPage() {
         }
       }
 
-      const res = await fetch(`/api/v1/reviews/${id}/readme`, { headers });
+      const res = await fetch(`${API_BASE_URL}/api/v1/reviews/${id}/readme`, { headers });
       let markdownText = '';
       if (res.ok) {
         markdownText = await res.text();
@@ -333,7 +635,7 @@ export default function ReviewDashboardPage() {
         }
       }
 
-      const res = await fetch(`/api/v1/reviews/${id}/pdf`, { headers });
+      const res = await fetch(`${API_BASE_URL}/api/v1/reviews/${id}/pdf`, { headers });
       if (!res.ok) {
         throw new Error(`PDF endpoint returned HTTP ${res.status}`);
       }
@@ -409,32 +711,28 @@ export default function ReviewDashboardPage() {
       <header className="fixed top-0 left-0 right-0 h-14 bg-[#0F0F0F] border-b border-[#303030] z-50 px-4 sm:px-6">
         <div className="h-full w-full max-w-[1600px] mx-auto flex items-center justify-between">
           
-          {/* Left Brand Identity & Nav Tabs */}
-          <div className="flex items-center gap-4">
+          {/* Left Brand Identity: Official Logo | Subtitle */}
+          <div className="flex items-center gap-3">
             <a
               href="/"
               onClick={(e) => {
                 e.preventDefault();
                 navigate('/');
               }}
-              className="flex items-center cursor-pointer select-none group"
+              className="flex items-center cursor-pointer select-none group focus:outline-none"
+              title="Re:Code — Read. Review. Refine."
             >
               <BrandLogo
+                src="/Logo.svg"
                 className="h-7 w-auto object-contain transition-transform group-hover:scale-105"
               />
             </a>
 
-            <nav className="hidden lg:flex items-center gap-1 ml-4">
-              <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#272727] text-[#F1F1F1] border border-[#3F3F3F]">
-                Overview
-              </span>
-              <button
-                onClick={() => navigate('/preview')}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727] transition-colors cursor-pointer"
-              >
-                Design System
-              </button>
-            </nav>
+            <span className="text-[#303030] text-sm select-none">|</span>
+
+            <span className="text-xs text-[#717171] font-mono tracking-wide hidden sm:inline select-none">
+              Read. Review. Refine.
+            </span>
           </div>
 
           {/* Right Action Group */}
@@ -501,7 +799,7 @@ export default function ReviewDashboardPage() {
           )}
 
           {/* Top Project Health Summary Banner */}
-          <section className="bg-[#181818] border border-[#303030] rounded-xl p-5 lg:p-6">
+          <section className="audit-page-section bg-[#181818] border border-[#303030] rounded-xl p-5 lg:p-6">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
               
               {/* Left Column: Context & Metadata */}
@@ -595,23 +893,23 @@ export default function ReviewDashboardPage() {
                   
                   {/* 5-Column Severity Count Strip */}
                   <div className="grid grid-cols-5 gap-1.5 font-mono text-xs">
-                    <div className="flex flex-col items-center justify-center py-1.5 rounded bg-[#FF4D4D]/12 border border-[#FF4D4D]/30 text-[#FF4D4D]">
+                    <div className="metric-block flex flex-col items-center justify-center py-1.5 rounded bg-[#FF4D4D]/12 border border-[#FF4D4D]/30 text-[#FF4D4D]">
                       <span className="font-bold">{critCount}</span>
                       <span className="text-[9px] uppercase tracking-wider opacity-80">Crit</span>
                     </div>
-                    <div className="flex flex-col items-center justify-center py-1.5 rounded bg-[#FFA116]/12 border border-[#FFA116]/30 text-[#FFA116]">
+                    <div className="metric-block flex flex-col items-center justify-center py-1.5 rounded bg-[#FFA116]/12 border border-[#FFA116]/30 text-[#FFA116]">
                       <span className="font-bold">{highCount}</span>
                       <span className="text-[9px] uppercase tracking-wider opacity-80">High</span>
                     </div>
-                    <div className="flex flex-col items-center justify-center py-1.5 rounded bg-[#FFD600]/12 border border-[#FFD600]/30 text-[#FFD600]">
+                    <div className="metric-block flex flex-col items-center justify-center py-1.5 rounded bg-[#FFD600]/12 border border-[#FFD600]/30 text-[#FFD600]">
                       <span className="font-bold">{medCount}</span>
                       <span className="text-[9px] uppercase tracking-wider opacity-80">Med</span>
                     </div>
-                    <div className="flex flex-col items-center justify-center py-1.5 rounded bg-[#78DFFF]/12 border border-[#78DFFF]/30 text-[#78DFFF]">
+                    <div className="metric-block flex flex-col items-center justify-center py-1.5 rounded bg-[#78DFFF]/12 border border-[#78DFFF]/30 text-[#78DFFF]">
                       <span className="font-bold">{lowCount}</span>
                       <span className="text-[9px] uppercase tracking-wider opacity-80">Low</span>
                     </div>
-                    <div className="flex flex-col items-center justify-center py-1.5 rounded bg-[#AAAAAA]/12 border border-[#AAAAAA]/30 text-[#AAAAAA]">
+                    <div className="metric-block flex flex-col items-center justify-center py-1.5 rounded bg-[#AAAAAA]/12 border border-[#AAAAAA]/30 text-[#AAAAAA]">
                       <span className="font-bold">{infoCount}</span>
                       <span className="text-[9px] uppercase tracking-wider opacity-80">Info</span>
                     </div>
@@ -651,7 +949,7 @@ export default function ReviewDashboardPage() {
           </section>
 
           {/* Workspace 2-Column Layout */}
-          <div className="flex flex-col lg:flex-row gap-6 items-start w-full">
+          <div className="audit-page-section flex flex-col lg:flex-row gap-6 items-start w-full">
             
             {/* Left Column: Project Files Sidebar */}
             <aside className="w-full lg:w-80 flex-shrink-0 bg-[#181818] border border-[#303030] rounded-xl p-4 flex flex-col gap-3">
@@ -781,17 +1079,11 @@ export default function ReviewDashboardPage() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => navigate('/submit')}
+                    onClick={() => setShowRawCodeModal(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-[#212121] border border-[#303030] rounded-lg text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727] transition-colors text-xs font-medium cursor-pointer"
                   >
+                    <Code2 className="w-3.5 h-3.5 text-[#02C8F0]" />
                     <span>Raw Code</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate('/preview')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#212121] border border-[#303030] rounded-lg text-[#02C8F0] hover:bg-[#272727] transition-colors text-xs font-medium cursor-pointer"
-                  >
-                    <span>AST Node Inspector</span>
                   </button>
                 </div>
               </div>
@@ -869,91 +1161,90 @@ export default function ReviewDashboardPage() {
               <div className="space-y-4">
                 
                 {filteredIssues.map((issue, idx) => {
-                  const issueKey = issue.id || `issue-${idx}`;
-                  const isApplied = !!appliedPatches[issueKey];
+                  const issueKey = issue._key || issue.id || issue._id || `issue-${idx}`;
+                  const isSafeIssue =
+                    issue.severity === 'LOW' ||
+                    issue.severity === 'INFO' ||
+                    (issue.rule_id || issue.ruleId || '').toUpperCase().includes('UNUSED') ||
+                    (issue.rule_id || issue.ruleId || '').toUpperCase().includes('CONSOLE') ||
+                    (issue.rule_id || issue.ruleId || '').toUpperCase().includes('LOG');
+                  const isApplied = !!appliedPatches[issueKey] || (allSafeFixesApplied && isSafeIssue);
                   const isCopied = copiedIssueId === issueKey || copiedIssueId === issue.title;
-                  const isSyntax = issue.rule_id === 'PARSER_ERROR' || issue.ruleId === 'PARSER_ERROR' || issue.category === 'SYNTAX';
+                  const isSyntax =
+                    issue.rule_id === 'PARSER_ERROR' ||
+                    issue.ruleId === 'PARSER_ERROR' ||
+                    issue.category === 'SYNTAX';
                   const isCritical = issue.severity === 'CRITICAL';
-                  const lineNum = issue.line_number || issue.line || 19;
+                  const isHigh = issue.severity === 'HIGH' || isSyntax;
+                  const lineNum = issue.line_number || issue.line || 1;
+                  const fileName = activeFile?.file_path || issue.file || issue.filePath || 'source.js';
+                  const scopeText = issue.scope || `Line ${lineNum} in ${fileName}`;
 
-                  // Render Card Type 1: Syntax / Parsing / Incomplete Code Error
-                  if (isSyntax) {
-                    return (
-                      <article
-                        key={issueKey}
-                        data-severity="high"
-                        className="bg-[#181818] border border-[#FFA116]/40 rounded-xl p-5 relative"
-                      >
-                        {/* Tags Header */}
-                        <div className="flex flex-wrap items-center gap-2 mb-2 font-mono text-xs">
-                          <span className="px-2 py-0.5 rounded bg-[#FFA116]/15 text-[#FFA116] border border-[#FFA116]/30 font-bold">
-                            HIGH
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
-                            PARSER_ERROR
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
-                            Line {lineNum} in {activeFile.file_path || 'source.js'}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-[#212121] text-[#02C8F0] border border-[#303030]">
-                            Static Analyzer Engine
-                          </span>
-                        </div>
+                  // Contextual rule & standard category
+                  const categoryOrStandard =
+                    issue.owasp ||
+                    issue.cwe ||
+                    (issue.rule_id === 'UNUSED_VARIABLE'
+                      ? 'Code Smell / Dead Code'
+                      : issue.rule_id === 'HARDCODED_SECRET'
+                      ? 'CWE-798: Hard-coded Credentials'
+                      : issue.rule_id === 'SQL_INJECTION'
+                      ? 'CWE-89 / OWASP A03:2021'
+                      : issue.rule_id === 'CONSOLE_LOG_STMT' ||
+                        issue.rule_id === 'CONSOLE_LOG_STATEMENT'
+                      ? 'Code Quality / Info Exposure'
+                      : issue.rule_id === 'PARSER_ERROR'
+                      ? 'AST Syntax / Parser Engine'
+                      : issue.category || 'Security & Quality');
 
-                        <h3 className="text-base font-semibold text-[#F1F1F1]">
-                          {issue.title || 'Syntax Error: Incomplete Block / Unexpected EOF'}
-                        </h3>
+                  // Generate rule-specific and line-specific diff (eliminates generic SQL queries)
+                  const { diffBefore, diffAfter } = getIssueDiff(issue, activeFile);
 
-                        {/* Description Box */}
-                        <div className="mt-2.5 bg-[#212121] border border-[#303030] rounded-lg p-3 text-xs text-[#AAAAAA] leading-relaxed">
-                          {issue.description ||
-                            'Static analysis detected an unclosed block or missing bracket. Code cannot be compiled or fully traversed until syntax errors are resolved.'}
-                        </div>
+                  // Contextual engine label: HYBRID (AST + AI) when corroborated
+                  const rawEngine = String(issue.engine || issue.source || issue.engine_source || '').toUpperCase();
+                  const engineLabel =
+                    rawEngine.includes('HYBRID')
+                      ? 'HYBRID (AST + AI)'
+                      : rawEngine.includes('GEMINI') || rawEngine.includes('AI')
+                      ? 'Gemini AI'
+                      : 'Static AST';
 
-                        {/* Plain Language Fix Suggestion Box */}
-                        <div className="mt-3 bg-[#0F0F0F] border border-[#303030] rounded-lg p-3 text-xs text-[#F1F1F1] flex items-start gap-2.5">
-                          <span className="text-[16px] leading-tight select-none">💡</span>
-                          <div>
-                            <span className="font-semibold text-[#F1F1F1]">Remediation Suggestion:</span>
-                            <p className="text-[#AAAAAA] mt-0.5 leading-relaxed">
-                              {formatSyntaxRemediationText(issue.remediation, lineNum)}
-                            </p>
-                          </div>
-                        </div>
+                  // Clear Plain-Language Explanation fields
+                  const whatText =
+                    issue.what_is_wrong ||
+                    issue.what ||
+                    issue.explanation ||
+                    issue.description ||
+                    issue.title ||
+                    'Code defect detected by static & AI analysis.';
 
-                        {/* Card Actions */}
-                        <div className="mt-4 pt-3 border-t border-[#303030] flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => navigate('/submit')}
-                              className="px-3 py-1.5 rounded-lg bg-[#212121] border border-[#303030] text-[#F1F1F1] hover:bg-[#272727] text-xs font-medium transition-colors cursor-pointer"
-                            >
-                              Inspect Line {lineNum}
-                            </button>
-                          </div>
-                          <span className="font-mono text-xs text-[#717171]">
-                            AST Engine ID: #AST-SYNTAX-{lineNum}
-                          </span>
-                        </div>
-                      </article>
-                    );
-                  }
+                  const whyText =
+                    issue.why_dangerous ||
+                    issue.why ||
+                    (isCritical
+                      ? 'Directly introduces an exploitable security vulnerability, credential exposure, or unauthorized access risk.'
+                      : isHigh
+                      ? 'Prevents code compilation, syntax traversal, or reliable execution in production.'
+                      : 'Degrades code maintainability, leaks runtime telemetry, or introduces dead code bloat.');
 
-                  // Render Card Type 2: Security Vulnerability / Optimization Card with Diff Box
-                  const diffBefore =
-                    issue.diff_before ||
-                    `const query = "SELECT * FROM students WHERE campus = '" + campusId + "' AND gpa >= " + gradeThreshold;`;
-                  const diffAfter =
-                    issue.diff_after ||
-                    `const query = "SELECT * FROM students WHERE campus = $1 AND gpa >= $2;";\nconst rows = await this.pool.execute(query, [campusId, gradeThreshold]);`;
+                  const howText =
+                    issue.how_to_fix ||
+                    issue.how ||
+                    issue.remediation ||
+                    (isSyntax
+                      ? formatSyntaxRemediationText(issue.remediation, lineNum)
+                      : 'Step 1: Review the affected code logic against secure development best practices.\nStep 2: Apply the recommended remediation diff patch below.');
 
                   return (
                     <article
                       key={issueKey}
-                      data-severity={issue.severity?.toLowerCase() || 'critical'}
-                      className={`bg-[#181818] rounded-xl p-5 relative border ${
-                        isCritical ? 'border-[#FF4D4D]/40' : 'border-[#FFA116]/40'
+                      data-severity={issue.severity?.toLowerCase() || (isHigh ? 'high' : 'critical')}
+                      className={`finding-card bg-[#181818] rounded-xl p-5 relative border ${
+                        isCritical
+                          ? 'border-[#FF4D4D]/40'
+                          : isHigh
+                          ? 'border-[#FFA116]/40'
+                          : 'border-[#27C93F]/40'
                       }`}
                     >
                       {/* Tags Header */}
@@ -962,41 +1253,85 @@ export default function ReviewDashboardPage() {
                           className={`px-2 py-0.5 rounded font-bold ${
                             isCritical
                               ? 'bg-[#FF4D4D]/15 text-[#FF4D4D] border border-[#FF4D4D]/30'
-                              : 'bg-[#FFA116]/15 text-[#FFA116] border border-[#FFA116]/30'
+                              : isHigh
+                              ? 'bg-[#FFA116]/15 text-[#FFA116] border border-[#FFA116]/30'
+                              : 'bg-[#27C93F]/15 text-[#27C93F] border border-[#27C93F]/30'
                           }`}
                         >
-                          {issue.severity || 'CRITICAL'}
+                          {issue.severity || (isHigh ? 'HIGH' : 'CRITICAL')}
                         </span>
+
                         <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
-                          {issue.rule_id || issue.ruleId || 'CWE-89'}
+                          {issue.rule_id || issue.ruleId || 'CODE_DEFECT'}
                         </span>
+
                         <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
-                          OWASP Top 10 A03:2021
+                          {categoryOrStandard}
                         </span>
-                        <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
-                          Line {lineNum}
+
+                        {/* Clean Engine Badge (Single engine source badge) */}
+                        <span
+                          className={`px-2 py-0.5 rounded border font-medium ${
+                            engineLabel.toUpperCase().includes('HYBRID')
+                              ? 'bg-[#02C8F0]/15 text-[#02C8F0] border-[#02C8F0]/40'
+                              : engineLabel.toUpperCase().includes('GEMINI')
+                              ? 'bg-[#FFA116]/15 text-[#FFA116] border-[#FFA116]/40'
+                              : 'bg-[#212121] text-[#AAAAAA] border-[#303030]'
+                          }`}
+                        >
+                          {engineLabel}
                         </span>
+
+                        {/* Line Number & Exact File Scope */}
+                        <span className="px-2 py-0.5 rounded bg-[#212121] text-[#F1F1F1] border border-[#303030] font-medium">
+                          {scopeText}
+                        </span>
+
                         <span className="px-2 py-0.5 rounded bg-[#02C8F0]/12 text-[#02C8F0] border border-[#02C8F0]/30 font-medium">
                           1-Click Patch Ready
                         </span>
                       </div>
 
+                      {/* Issue Title */}
                       <h3 className="text-base font-semibold text-[#F1F1F1]">
-                        {issue.title || 'SQL Injection vulnerability in student query parameter'}
+                        {issue.title || (issue.rule_id ? issue.rule_id.replace(/_/g, ' ') : 'Code Defect')}
                       </h3>
 
-                      {/* Gemini AI Analysis Box */}
-                      <div className="mt-2.5 bg-[#212121] border border-[#303030] rounded-lg p-3 text-xs text-[#AAAAAA] leading-relaxed">
-                        {issue.description ||
-                          'User input is concatenated directly into the raw SQL query string without parameterization. An attacker could inject malicious SQL payloads to bypass authentication or extract sensitive tables.'}
+                      {/* Clear Plain-Language Explanation Format */}
+                      <div className="mt-3 space-y-2.5 text-xs">
+                        {/* 1. What the error is */}
+                        <div className="bg-[#212121] border border-[#303030] rounded-lg p-3 leading-relaxed">
+                          <span className="font-semibold text-[#02C8F0] block mb-1">
+                            What the error is:
+                          </span>
+                          <p className="text-[#F1F1F1]">{whatText}</p>
+                        </div>
+
+                        {/* 2. Why it is dangerous or bad practice */}
+                        <div className="bg-[#212121] border border-[#303030] rounded-lg p-3 leading-relaxed">
+                          <span className="font-semibold text-[#FFA116] block mb-1">
+                            Why it is dangerous / bad practice:
+                          </span>
+                          <p className="text-[#AAAAAA]">{whyText}</p>
+                        </div>
+
+                        {/* 3. How to fix it step-by-step */}
+                        <div className="bg-[#212121] border border-[#303030] rounded-lg p-3 leading-relaxed">
+                          <span className="font-semibold text-[#27C93F] block mb-1">
+                            How to fix step-by-step:
+                          </span>
+                          <p className="text-[#AAAAAA] whitespace-pre-line leading-relaxed">{howText}</p>
+                        </div>
                       </div>
 
-                      {/* Split Code Diff Box strictly rendered inside semantic text containers with XSS sanitization */}
+                      {/* Relevant Code Diff (Red = Line to remove, Green = Line to add) */}
                       <DiffViewer
                         diffBefore={diffBefore}
                         diffAfter={diffAfter}
-                        filePath={activeFile.file_path || 'source.js'}
+                        filePath={fileName}
                         lineNumber={lineNum}
+                        ruleId={issue.rule_id || issue.ruleId}
+                        isApplied={isApplied}
                         className="mt-3"
                       />
 
@@ -1005,17 +1340,18 @@ export default function ReviewDashboardPage() {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => handleApplyPatch(issueKey)}
-                            className={`patch-apply-btn flex items-center gap-1.5 px-3 py-1.5 font-bold rounded-lg font-mono text-xs transition-colors cursor-pointer ${
+                            onClick={() => handleApplyPatch(issueKey, issue)}
+                            disabled={isApplied}
+                            className={`patch-apply-btn flex items-center gap-1.5 px-3 py-1.5 font-bold rounded-lg font-mono text-xs transition-colors ${
                               isApplied
-                                ? 'bg-[#27C93F] text-[#0F0F0F]'
-                                : 'bg-[#02C8F0] hover:bg-[#38D4F4] text-[#0F0F0F]'
+                                ? 'bg-[#27C93F] text-[#0F0F0F] cursor-default'
+                                : 'bg-[#02C8F0] hover:bg-[#38D4F4] text-[#0F0F0F] cursor-pointer'
                             }`}
                           >
                             {isApplied ? (
                               <>
                                 <CheckCircle2 className="w-4 h-4" />
-                                <span>Patch Applied</span>
+                                <span>✓ Patch Applied</span>
                               </>
                             ) : (
                               <>
@@ -1046,7 +1382,7 @@ export default function ReviewDashboardPage() {
 
                         <div className="flex items-center gap-4">
                           <span className="font-mono text-xs text-[#717171]">
-                            Rule: {issue.rule_id || issue.ruleId || 'node/sql-no-concat'}
+                            Rule: {issue.cwe || issue.rule_id || issue.ruleId || 'AST-STATIC'}
                           </span>
                         </div>
                       </div>
@@ -1115,23 +1451,82 @@ export default function ReviewDashboardPage() {
 
               <button
                 type="button"
-                onClick={() => {
-                  const allPatches = {};
-                  allIssues.forEach((i, idx) => {
-                    allPatches[i.id || `issue-${idx}`] = true;
-                  });
-                  setAppliedPatches(allPatches);
-                }}
-                className="px-4 py-1.5 rounded-lg bg-[#F1F1F1] text-[#0F0F0F] font-bold text-xs hover:bg-white transition-colors flex items-center gap-1.5 cursor-pointer"
+                onClick={handleApplyAllSafeFixes}
+                disabled={allSafeFixesApplied}
+                className={`px-4 py-1.5 rounded-lg font-bold text-xs transition-colors flex items-center gap-1.5 shadow-lg ${
+                  allSafeFixesApplied
+                    ? 'bg-[#27C93F]/20 text-[#27C93F] border border-[#27C93F]/40 cursor-default'
+                    : 'bg-[#27C93F] text-[#0F0F0F] hover:bg-[#30E04B] cursor-pointer'
+                }`}
               >
                 <Check className="w-4 h-4" />
-                <span>Apply All Safe Fixes</span>
+                <span>{allSafeFixesApplied ? '✓ All Safe Fixes Applied' : 'Apply All Safe Fixes'}</span>
               </button>
             </div>
           </aside>
 
         </div>
       </main>
+
+      {/* Raw Code Live In-Memory Modal */}
+      {showRawCodeModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#141414] border border-[#303030] rounded-xl max-w-4xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-5 py-4 border-b border-[#303030] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Code2 className="w-5 h-5 text-[#02C8F0]" />
+                <h3 className="font-mono text-sm font-bold text-[#F1F1F1]">
+                  {activeFile.file_path || activeFile.path || 'source.js'}
+                </h3>
+                <span className="px-2 py-0.5 rounded bg-[#27C93F]/15 text-[#27C93F] text-xs font-mono font-medium border border-[#27C93F]/30">
+                  Live In-Memory Patched Code
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.clipboard) {
+                      navigator.clipboard.writeText(activeFileContent);
+                      setCodeCopied(true);
+                      setTimeout(() => setCodeCopied(false), 2000);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#212121] border border-[#303030] rounded-lg text-xs font-mono text-[#F1F1F1] hover:bg-[#272727] cursor-pointer transition-colors"
+                >
+                  {codeCopied ? <Check className="w-3.5 h-3.5 text-[#27C93F]" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{codeCopied ? 'Copied!' : 'Copy File'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRawCodeModal(false)}
+                  className="p-1.5 rounded-lg text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#212121] cursor-pointer transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 overflow-y-auto font-mono text-xs text-[#F1F1F1] bg-[#0F0F0F] leading-relaxed select-text flex-1">
+              {activeFileContent ? (
+                <pre className="m-0 whitespace-pre">
+                  <code>
+                    {activeFileContent.split('\n').map((l, i) => (
+                      <div key={i} className="flex hover:bg-[#181818]/60 px-2 py-0.5 rounded">
+                        <span className="w-10 text-right pr-4 text-[#717171] select-none shrink-0 font-mono">
+                          {i + 1}
+                        </span>
+                        <span className="flex-1 font-mono">{l}</span>
+                      </div>
+                    ))}
+                  </code>
+                </pre>
+              ) : (
+                <div className="text-center py-8 text-[#717171]">No code content available for this file.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Docked Footer */}
       <Footer className="mt-auto" />

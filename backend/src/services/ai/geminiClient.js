@@ -4,7 +4,7 @@ const { GoogleGenAI, Type } = require('@google/genai');
 /**
  * Default Gemini model identifier
  */
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
 /**
  * Re:Code Reviewer System Instruction Persona and Security Directives
@@ -20,19 +20,26 @@ REVIEW OBJECTIVES & CATEGORIES:
    - Identify vulnerabilities (OWASP Top 10, CWE-89 SQL Injection, CWE-79 XSS, CWE-798 Hardcoded Credentials, CWE-22 Path Traversal, Insecure Deserialization, SSRF, RCE, IDOR, Broken Authentication).
    - Evaluate real-world exploitability, severity, and blast radius.
 2. QUALITY:
+   - Identify algorithmic & logic flaws (e.g. infinite loops/cycles in graph traversals, off-by-one bounds, unhandled null pointers, recursion stack overflow).
    - Identify severe architectural anti-patterns, memory leaks, unhandled asynchronous errors, unclosed resources, race conditions, and deadlocks.
 3. OPTIMIZATION:
    - Identify computational bottlenecks (O(N^2) loops over dynamic collections), unindexed database operations, event loop blocking operations, and redundant allocations.
 
 REVIEW METHODOLOGY & SCHEMA CONSTRAINTS:
-- For every issue found, identify the exact 1-indexed source line number.
+- For every issue found, identify the exact 1-indexed source line number ("line_number").
 - Assign severity: "CRITICAL", "HIGH", "MEDIUM", "LOW", or "INFO".
 - Assign category: "SECURITY", "QUALITY", or "OPTIMIZATION".
-- Provide a short, professional title.
-- Provide a plain language explanation describing the problem, security or performance impact, and why remediation is required.
-- Provide actionable, minimal remediation code diffs:
+- Provide a concise defect title ("title", e.g., "SQL Injection via Query Concatenation").
+- Provide direct 1-2 sentence explanation of the vulnerability ("what_is_wrong").
+- Explain the exact attack vector or failure scenario ("why_dangerous", e.g. "An attacker can supply '\' OR \'1\'=\'1' to dump entire table data").
+- Provide exact actionable solution steps ("how_to_fix", e.g. "Step 1: Use parameterized placeholders like $1, $2. Step 2: Pass variables via query array.").
+- Provide actionable, minimal remediation code diffs SPECIFIC to the exact flawed line:
   - "diff_before": The exact original vulnerable/flawed line(s) as they appear in the source code.
-  - "diff_after": The clean, safe, and remediated replacement line(s).
+  - "diff_after": Strictly the corrected line(s) ONLY for that specific line, never boilerplate SQL for non-SQL bugs.
+    * For unused variables: diff_after must be empty or "// Removed unused variable".
+    * For hardcoded secrets: diff_after must retrieve the secret from environment variables (process.env).
+    * For SQL injection: diff_after must use parameterized placeholders ($1, $2, ?, %s) matching the specific query and variables.
+    * For console.log: diff_after must be "// logger.info(...) or remove before production".
 
 OUTPUT REQUIREMENT:
 You must return strictly a valid JSON object conforming to the findings schema. If the code is completely safe, clean, and optimal, return { "findings": [] }.`;
@@ -50,7 +57,11 @@ const FINDINGS_JSON_SCHEMA = {
         properties: {
           line: {
             type: Type.INTEGER,
-            description: '1-indexed line number in source code where issue occurs',
+            description: '1-based line number in source code where issue occurs',
+          },
+          line_number: {
+            type: Type.INTEGER,
+            description: 'Exact 1-based line where the defect starts',
           },
           severity: {
             type: Type.STRING,
@@ -62,19 +73,31 @@ const FINDINGS_JSON_SCHEMA = {
           },
           title: {
             type: Type.STRING,
-            description: 'Short title of the finding',
+            description: 'Concise defect name (e.g. SQL Injection via Query Concatenation)',
           },
           explanation: {
             type: Type.STRING,
-            description: 'Plain language explanation of problem and impact',
+            description: 'Technical explanation of what is wrong',
+          },
+          what_is_wrong: {
+            type: Type.STRING,
+            description: 'Direct 1-2 sentence explanation of the vulnerability',
+          },
+          why_dangerous: {
+            type: Type.STRING,
+            description: 'Explain exact attack vector or impact',
+          },
+          how_to_fix: {
+            type: Type.STRING,
+            description: 'Exact actionable solution steps',
           },
           diff_before: {
             type: Type.STRING,
-            description: 'Original vulnerable line(s)',
+            description: 'Exact vulnerable snippet from user code',
           },
           diff_after: {
             type: Type.STRING,
-            description: 'Remediated safe line(s)',
+            description: 'Strictly the corrected line(s), never boilerplate SQL for non-SQL bugs',
           },
         },
         required: [
@@ -180,6 +203,11 @@ ${staticContext}
 <UNTRUSTED_SOURCE_CODE file="${filePath}" language="${language}">
 ${numberedLines}
 </UNTRUSTED_SOURCE_CODE>
+
+INSPECTION PRIORITIES:
+1. Algorithmic and logic flaws (e.g. infinite loops/cycles in graph or tree traversals, off-by-one errors, recursion depth overflow, unhandled edge cases).
+2. Architectural antipatterns and security flaws (SQL injection, hardcoded secrets/credentials, improper error handling, event loop blocking).
+3. Code smells and quality improvements.
 
 Analyze the code above and return your review strictly in the specified JSON schema format.`;
 }

@@ -299,4 +299,48 @@ describe('Module 6: GitHub Service & Repository Ingestion Pipeline', () => {
       );
     });
   });
+
+  // ============================================================================
+  // 6. Deep Recursive Traversal, Depth Capping (10), and Folder Prioritization
+  // ============================================================================
+  describe('6. Deep Recursive Traversal & Application Folder Prioritization', () => {
+    it('should crawl subfolders up to 10 levels deep and exclude beyond depth 10', () => {
+      const tree = [
+        { path: 'backend/src/api/v1/controllers/auth/user/login.js', type: 'blob', size: 100 }, // depth 7
+        { path: 'a/b/c/d/e/f/g/h/i/j/k/too_deep.js', type: 'blob', size: 100 }, // depth 11
+      ];
+
+      const candidates = filterCandidateFiles(tree, { autoSlice: true });
+      expect(candidates.map((c) => c.path)).toContain('backend/src/api/v1/controllers/auth/user/login.js');
+      expect(candidates.map((c) => c.path)).not.toContain('a/b/c/d/e/f/g/h/i/j/k/too_deep.js');
+    });
+
+    it('should prioritize backend controllers, routes, models and frontend components', () => {
+      const mixedTree = [
+        { path: 'src/counter.js', type: 'blob', size: 100 },
+        { path: 'src/main.js', type: 'blob', size: 100 },
+        { path: 'backend/controllers/userController.js', type: 'blob', size: 100 },
+        { path: 'backend/routes/authRoutes.js', type: 'blob', size: 100 },
+        { path: 'backend/models/User.js', type: 'blob', size: 100 },
+        { path: 'frontend/src/components/Navbar.jsx', type: 'blob', size: 100 },
+        { path: 'frontend/src/pages/Home.jsx', type: 'blob', size: 100 },
+      ];
+
+      const candidates = filterCandidateFiles(mixedTree, { autoSlice: true });
+      const paths = candidates.map((c) => c.path);
+
+      expect(paths).toContain('backend/controllers/userController.js');
+      expect(paths).toContain('backend/routes/authRoutes.js');
+      expect(paths).toContain('backend/models/User.js');
+      expect(paths).toContain('frontend/src/components/Navbar.jsx');
+      expect(paths).toContain('frontend/src/pages/Home.jsx');
+      expect(paths).toContain('src/counter.js');
+      expect(paths).toContain('src/main.js');
+
+      // Check that controllers and routes rank higher than starter counter.js
+      const controllerIdx = paths.indexOf('backend/controllers/userController.js');
+      const counterIdx = paths.indexOf('src/counter.js');
+      expect(controllerIdx).toBeLessThan(counterIdx);
+    });
+  });
 });

@@ -39,29 +39,22 @@ export default function Navbar({
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 h-[56px] bg-[#0F0F0F] border-b border-[#303030] px-4 select-none">
       <div className="max-w-7xl mx-auto h-full flex items-center justify-between gap-4">
-        {/* Left Section: Logo & Status */}
+        {/* Left Section: Logo | Subtitle */}
         <div className="flex items-center gap-3">
           <a
             href="/"
             onClick={(e) => onRouteChange && (e.preventDefault(), onRouteChange('home'))}
-            className="flex items-center gap-2.5 focus:outline-none group"
+            className="flex items-center gap-2.5 focus:outline-none group select-none"
             title={`${brandTitle} — Read. Review. Refine.`}
           >
-            <BrandLogo className="h-8 w-auto object-contain transition-transform duration-150 group-hover:scale-105" />
+            <BrandLogo src="/Logo.svg" className="h-8 w-auto object-contain transition-transform duration-150 group-hover:scale-105" />
           </a>
 
-          {/* Status Pill */}
-          <div className="hidden sm:inline-flex">
-            <PillBadge
-              variant="status"
-              size="sm"
-              dot={true}
-              dotColor="#27C93F"
-              className="font-mono text-[11px]"
-            >
-              {statusText}
-            </PillBadge>
-          </div>
+          <span className="text-[#303030] text-sm select-none">|</span>
+
+          <span className="text-xs text-[#717171] font-mono tracking-wide hidden sm:inline select-none">
+            Read. Review. Refine.
+          </span>
         </div>
 
         {/* Center / Navigation Links (Desktop) */}

@@ -2,6 +2,7 @@ const express = require('express');
 const { optionalAuth } = require('../middleware/authMiddleware');
 const {
   runCodeReview,
+  runReview,
   getReviewDetails,
   getReviewHistoryController,
   deleteReview,
@@ -14,14 +15,16 @@ const router = express.Router();
 // Apply optionalAuth across review routes to populate req.user from Bearer token
 router.use(optionalAuth);
 
+const reviewHandler = runReview || runCodeReview;
+
 /**
  * @route   POST /api/v1/reviews/run
  * @desc    Execute the complete 7-step code review pipeline (AST + Gemini AI)
  * @access  Public (Guest with x-guest-session-id or Authenticated)
  */
-router.post('/run', runCodeReview);
-router.post('/analyze', runCodeReview);
-router.post('/', runCodeReview);
+router.post('/run', reviewHandler);
+router.post('/analyze', reviewHandler);
+router.post('/', reviewHandler);
 
 /**
  * @route   GET /api/v1/reviews/history
