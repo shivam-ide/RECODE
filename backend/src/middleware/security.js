@@ -531,6 +531,98 @@ function ssrfShieldMiddleware(options = {}) {
 }
 
 /**
+ * Allowed public hostnames for GitHub ingestion and raw content
+ */
+const ALLOWED_GITHUB_HOSTS = [
+  'api.github.com',
+  'github.com',
+  'raw.githubusercontent.com',
+  'objects.githubusercontent.com',
+  'codeload.github.com',
+];
+
+/**
+ * Perform fetch with strict SSRF & Redirect Safeguards:
+ * - Prevents redirection to private IP ranges (127.0.0.1, 10.x, 192.168.x, 172.16-31.x, 169.254.x, etc.)
+ * - Rejects non-https protocols and non-standard ports
+ * - Resolves DNS before following redirects (DNS rebinding defense)
+ * - Limits redirects strictly to approved public GitHub domains
+ * - Caps maximum redirect hops to prevent loops
+ *
+ * @param {string} url - Target URL to request
+ * @param {Object} [options={}] - Standard fetch options
+ * @param {number} [redirectHops=0] - Current redirect recursion depth
+ * @returns {Promise<Response>}
+ */
+async function safeFetchWithSsrfGuard(url, options = {}, redirectHops = 0) {
+  const MAX_REDIRECT_HOPS = 3;
+  if (redirectHops > MAX_REDIRECT_HOPS) {
+    throw new AppError('SSRF Protection: Exceeded maximum allowed redirect hops.', 400, {
+      security: 'SSRF_REDIRECT_LOOP',
+    });
+  }
+
+  const parsedUrl = new URL(url);
+  const hostname = parsedUrl.hostname.toLowerCase();
+
+  // 1. Protocol check
+  if (parsedUrl.protocol !== 'https:') {
+    throw new AppError(
+      `SSRF Protection: Insecure protocol '${parsedUrl.protocol}'. Only 'https:' is permitted.`,
+      400,
+      { security: 'INSECURE_PROTOCOL' }
+    );
+  }
+
+  // 2. Port check
+  if (parsedUrl.port && parsedUrl.port !== '443') {
+    throw new AppError(
+      `SSRF Protection: Non-standard port '${parsedUrl.port}' is forbidden.`,
+      400,
+      { security: 'NON_STANDARD_PORT' }
+    );
+  }
+
+  // 3. DNS resolution & private IP rejection
+  await resolveDnsAndValidate(hostname);
+
+  // 4. Validate hostname belongs to allowed public GitHub infrastructure
+  const isAllowedHost =
+    ALLOWED_GITHUB_HOSTS.includes(hostname) ||
+    hostname.endsWith('.github.com') ||
+    hostname.endsWith('.githubusercontent.com');
+
+  if (!isAllowedHost) {
+    throw new AppError(
+      `SSRF Protection: Redirection or request to untrusted host '${hostname}' is prohibited.`,
+      400,
+      { security: 'UNTRUSTED_REDIRECT_HOST', hostname }
+    );
+  }
+
+  // 5. Execute fetch with manual redirect handling
+  const response = await fetch(url, {
+    ...options,
+    redirect: 'manual',
+  });
+
+  // 6. Handle redirects manually and validate destination before following
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new AppError('SSRF Protection: Redirect missing Location header.', 400, {
+        security: 'MALFORMED_REDIRECT',
+      });
+    }
+
+    const redirectTarget = new URL(location, url).href;
+    return safeFetchWithSsrfGuard(redirectTarget, options, redirectHops + 1);
+  }
+
+  return response;
+}
+
+/**
  * ============================================================================
  * 5. In-Memory Payload Size Clamps
  * Strictly rejects requests > 2MB with HTTP 413 Payload Too Large
@@ -601,12 +693,14 @@ module.exports = {
   // Module 18 SSRF Shield
   FORBIDDEN_HOSTNAMES,
   FORBIDDEN_TLD_SUFFIXES,
+  ALLOWED_GITHUB_HOSTS,
   parseNumericIp,
   isPrivateIPv4,
   isPrivateIp,
   resolveDnsAndValidate,
   validateSsrf,
   ssrfShieldMiddleware,
+  safeFetchWithSsrfGuard,
 
   // Module 18 In-Memory Payload Clamps
   MAX_PAYLOAD_BYTES,

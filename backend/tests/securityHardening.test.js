@@ -11,6 +11,7 @@ const {
   payloadClamp,
   MAX_PAYLOAD_BYTES,
   FORBIDDEN_HOSTNAMES,
+  safeFetchWithSsrfGuard,
 } = require('../src/middleware/security');
 const { errorHandler } = require('../src/middleware/errorHandler');
 
@@ -392,6 +393,89 @@ describe('Module 18: Security Hardening & Regression Suite', () => {
 
       // Health status OK
       expect(res.body.status).toBe('healthy');
+    });
+  });
+
+  /**
+   * ==========================================================================
+   * 6. SSRF Redirect Hijacking & Internal Network Defense (safeFetchWithSsrfGuard)
+   * ==========================================================================
+   */
+  describe('6. SSRF Redirect Hijacking & Ingestion Safeguards', () => {
+    it('should block requests to insecure http: protocol in safeFetchWithSsrfGuard', async () => {
+      await expect(
+        safeFetchWithSsrfGuard('http://api.github.com/repos/owner/repo')
+      ).rejects.toThrow(/Insecure protocol/i);
+    });
+
+    it('should block requests to forbidden private IP addresses or localhost', async () => {
+      await expect(
+        safeFetchWithSsrfGuard('https://127.0.0.1/admin/secrets')
+      ).rejects.toThrow(/SSRF Protection/i);
+
+      await expect(
+        safeFetchWithSsrfGuard('https://169.254.169.254/latest/meta-data')
+      ).rejects.toThrow(/SSRF Protection/i);
+    });
+
+    it('should block requests or redirects to unauthorized non-GitHub hostnames', async () => {
+      await expect(
+        safeFetchWithSsrfGuard('https://malicious-redirector.com/payload')
+      ).rejects.toThrow(/untrusted host/i);
+    });
+
+    it('should block malicious redirects that attempt to point to internal metadata IP', async () => {
+      const origFetch = global.fetch;
+      try {
+        global.fetch = jest.fn().mockResolvedValueOnce({
+          status: 302,
+          headers: new Headers({
+            location: 'https://169.254.169.254/latest/meta-data',
+          }),
+        });
+
+        await expect(
+          safeFetchWithSsrfGuard('https://api.github.com/repos/owner/repo')
+        ).rejects.toThrow(/SSRF Protection/i);
+      } finally {
+        global.fetch = origFetch;
+      }
+    });
+
+    it('should block malicious redirects that attempt to switch to insecure http protocol', async () => {
+      const origFetch = global.fetch;
+      try {
+        global.fetch = jest.fn().mockResolvedValueOnce({
+          status: 301,
+          headers: new Headers({
+            location: 'http://api.github.com/insecure',
+          }),
+        });
+
+        await expect(
+          safeFetchWithSsrfGuard('https://api.github.com/repos/owner/repo')
+        ).rejects.toThrow(/Insecure protocol/i);
+      } finally {
+        global.fetch = origFetch;
+      }
+    });
+
+    it('should block redirect loops exceeding maximum allowed hops', async () => {
+      const origFetch = global.fetch;
+      try {
+        global.fetch = jest.fn().mockImplementation(async (url) => ({
+          status: 302,
+          headers: new Headers({
+            location: 'https://api.github.com/next-hop',
+          }),
+        }));
+
+        await expect(
+          safeFetchWithSsrfGuard('https://api.github.com/initial')
+        ).rejects.toThrow(/Exceeded maximum allowed redirect hops/i);
+      } finally {
+        global.fetch = origFetch;
+      }
     });
   });
 });

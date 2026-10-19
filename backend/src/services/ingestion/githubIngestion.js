@@ -1,5 +1,5 @@
 const AppError = require('../../utils/AppError');
-const { resolveDnsAndValidate } = require('../../middleware/security');
+const { resolveDnsAndValidate, safeFetchWithSsrfGuard } = require('../../middleware/security');
 
 /**
  * Resource and Security Limits for GitHub Repository Scanning
@@ -235,7 +235,7 @@ async function fetchRepoTree(owner, repo, branch = 'main') {
   // Helper to fetch git tree for a specific ref
   async function queryTree(ref) {
     const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`;
-    return fetch(url, { headers });
+    return safeFetchWithSsrfGuard(url, { headers });
   }
 
   let response = await queryTree(requestedBranch);
@@ -243,7 +243,7 @@ async function fetchRepoTree(owner, repo, branch = 'main') {
   // If requested branch returns 404, query repository info to detect default branch (e.g. master)
   if (response.status === 404) {
     try {
-      const repoInfoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+      const repoInfoRes = await safeFetchWithSsrfGuard(`https://api.github.com/repos/${owner}/${repo}`, { headers });
       if (repoInfoRes.ok) {
         const repoInfo = await repoInfoRes.json();
         const defaultBranch = repoInfo.default_branch || 'master';
@@ -528,9 +528,8 @@ async function fetchFileRawContent(owner, repo, filePath, commitSha = 'main', bl
   // Strategy 1: Attempt direct raw fetch via raw.githubusercontent.com
   // Fast, returns pure source text, and bypasses GitHub REST API rate limits
   try {
-    await resolveDnsAndValidate('raw.githubusercontent.com');
     const rawUrl = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(ref)}/${encodedPath}`;
-    const rawRes = await fetch(rawUrl, {
+    const rawRes = await safeFetchWithSsrfGuard(rawUrl, {
       headers: {
         'User-Agent': 'ReCode-DeepCrawler/2.0',
         ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
@@ -559,7 +558,6 @@ async function fetchFileRawContent(owner, repo, filePath, commitSha = 'main', bl
   }
 
   // Strategy 2: Fetch directly from immutable git/blobs if blob SHA is provided
-  await resolveDnsAndValidate('api.github.com');
   const headers = {
     ...getGitHubHeaders(),
     Accept: 'application/vnd.github.v3.raw, application/vnd.github.v3+json',
@@ -569,7 +567,7 @@ async function fetchFileRawContent(owner, repo, filePath, commitSha = 'main', bl
   if (effectiveBlobSha) {
     try {
       const blobUrl = `https://api.github.com/repos/${owner}/${repo}/git/blobs/${effectiveBlobSha}`;
-      const blobRes = await fetch(blobUrl, { headers });
+      const blobRes = await safeFetchWithSsrfGuard(blobUrl, { headers });
       if (blobRes.ok) {
         return await blobRes.text();
       }
@@ -584,7 +582,7 @@ async function fetchFileRawContent(owner, repo, filePath, commitSha = 'main', bl
 
   let response;
   try {
-    response = await fetch(url, { headers });
+    response = await safeFetchWithSsrfGuard(url, { headers });
   } catch (err) {
     throw new AppError(`Network failure fetching file '${filePath}': ${err.message}`, 502);
   }
@@ -703,6 +701,19 @@ async function ingestRepository({
     totalBytes += Buffer.byteLength(file.content, 'utf8');
   }
 
+  // Strict enforcement: Ensure total downloaded content does not exceed 10MB
+  if (totalBytes > MAX_TOTAL_SIZE_BYTES) {
+    const totalMb = (totalBytes / (1024 * 1024)).toFixed(2);
+    throw new AppError(
+      `Total size of downloaded repository files exceeds the 10MB limit (cumulative size: ${totalMb}MB).`,
+      400,
+      {
+        maxAllowedBytes: MAX_TOTAL_SIZE_BYTES,
+        foundBytes: totalBytes,
+      }
+    );
+  }
+
   return {
     files: normalizedFiles,
     summary: {
@@ -732,4 +743,5 @@ module.exports = {
   ingestRepository,
   getPathDepth,
   scoreFilePath,
+  safeFetchWithSsrfGuard,
 };
