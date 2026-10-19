@@ -1,5 +1,4 @@
 import React from 'react';
-import { User } from 'lucide-react';
 import { useAuth } from '../../services/useAuth';
 
 /**
@@ -12,7 +11,6 @@ import { useAuth } from '../../services/useAuth';
 export default function UserSessionPill({
   className = '',
   onClick,
-  showDropdown = false,
 }) {
   const { user, isGuest, guestSessionId } = useAuth();
 

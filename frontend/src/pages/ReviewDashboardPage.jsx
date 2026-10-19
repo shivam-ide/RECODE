@@ -13,14 +13,12 @@ import {
   Download,
   FileText,
   Code2,
-  User,
   Clock,
   X,
 } from 'lucide-react';
 import Footer from '../components/common/Footer';
 import BrandLogo from '../components/common/BrandLogo';
 import { DiffViewer, UserSessionPill } from '../components/common';
-import { GUEST_SESSION_STORAGE_KEY } from '../services/supabaseAuth';
 import { useAuth } from '../services/useAuth';
 
 import { API_BASE_URL } from '../config/api';
@@ -122,7 +120,6 @@ function getIssueDiff(issue, activeFile) {
       });
     }
     const varMatches = (sourceLine || '').match(/[A-Za-z0-9_]+(?=\s*\+)|req\.(?:query|body|params)\.[A-Za-z0-9_]+/g) || ['campusId', 'gradeThreshold'];
-    const placeholders = varMatches.map((_, i) => `$${i + 1}`).join(' AND ');
     const params = varMatches.join(', ');
     return wrap({
       diffBefore: sourceLine || `const query = "SELECT * FROM students WHERE campus = '" + campusId + "' AND gpa >= " + gradeThreshold;`,

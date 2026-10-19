@@ -8,7 +8,6 @@ const { mergeAndDeduplicate } = require('./analysis/findingsNormalizer');
 const { calculateScore } = require('./analysis/scoringEngine');
 const { saveReviewResult } = require('./persistence/reviewRepository');
 const AppError = require('../utils/AppError');
-const { supabaseAdmin } = require('../config/supabaseClient');
 
 /**
  * Map language name to typical file extension

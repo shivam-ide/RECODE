@@ -21,11 +21,11 @@ async function optionalAuth(req, res, next) {
 
         // 1. Verify via Supabase Auth Admin
         try {
-          const { data, error } = await supabaseAdmin.auth.getUser(token);
+          const { data } = await supabaseAdmin.auth.getUser(token);
           if (data && data.user) {
             req.user = data.user;
           }
-        } catch (supabaseErr) {
+        } catch {
           // In offline development or sandbox, decode standard JWT payload
           try {
             const parts = token.split('.');
@@ -42,7 +42,7 @@ async function optionalAuth(req, res, next) {
                 };
               }
             }
-          } catch (jwtErr) {
+          } catch {
             // Ignore JWT decode error
           }
         }

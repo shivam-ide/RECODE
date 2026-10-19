@@ -292,7 +292,7 @@ async function fetchRepoTree(owner, repo, branch = 'main') {
     try {
       const parsed = JSON.parse(errorBody);
       detail = parsed.message || detail;
-    } catch (e) {
+    } catch {
       /* keep statusText */
     }
 

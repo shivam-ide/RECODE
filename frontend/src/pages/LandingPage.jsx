@@ -9,14 +9,12 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
-  Code2,
   ArrowRight,
 } from 'lucide-react';
 import {
   signInWithEmail,
   signUpWithEmail,
   resetPassword,
-  supabase,
   setGuestSession,
 } from '../services/supabaseAuth';
 import Footer from '../components/common/Footer';

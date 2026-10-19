@@ -209,7 +209,7 @@ function getMonospaceFont(doc) {
  * @param {Object} [options={}] - Customization options
  * @returns {Promise<Buffer>} Generated PDF binary buffer
  */
-function generateReviewPdf(reviewData = {}, options = {}) {
+function generateReviewPdf(reviewData = {}, _options = {}) {
   return new Promise((resolve, reject) => {
     try {
       // 16mm standard A4 margin in typographic points (16 * 72 / 25.4 = ~45.35pt)
@@ -570,14 +570,14 @@ function generateReviewPdf(reviewData = {}, options = {}) {
         const footerY = pageHeight - MARGIN + 8;
         doc.rect(MARGIN, footerY - 8, contentWidth, 0.5).fill('#CCCCCC');
 
-        doc.fillColor('#777777').font('Helvetica').fontSize(7).text(
+        doc.fillColor('#64748b').font('Helvetica').fontSize(7).text(
           '{ Re:Code } • Read. Review. Refine. | Comprehensive Quality & Reliability Report | OWASP Top 10 Active',
           MARGIN,
           footerY,
           { width: contentWidth - 80, lineBreak: false, baseline: 'middle' }
         );
 
-        doc.fillColor('#777777').font('Helvetica').fontSize(7).text(
+        doc.fillColor('#64748b').font('Helvetica').fontSize(7).text(
           `Page ${i + 1} of ${range.count}`,
           pageWidth - MARGIN - 60,
           footerY,
@@ -594,6 +594,25 @@ function generateReviewPdf(reviewData = {}, options = {}) {
   });
 }
 
+/**
+ * Render HTML/CSS footer template for PDF reports matching Re:Code specifications
+ *
+ * @param {Object} [options]
+ * @param {number} [options.pageNumber=1]
+ * @param {number} [options.totalPages=1]
+ * @returns {string} Rendered HTML footer template string
+ */
+function getPdfFooterHtml({ pageNumber = 1, totalPages = 1 } = {}) {
+  return `<footer class="pdf-footer" style="display: flex; align-items: center; justify-content: space-between; width: 100%; border-top: 0.5px solid #cccccc; padding-top: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; box-sizing: border-box; color: #64748b; font-size: 10px;">
+  <div style="vertical-align: middle;">
+    { Re:Code } • Read. Review. Refine. | Comprehensive Quality & Reliability Report | OWASP Top 10 Active
+  </div>
+  <div style="color: #64748b; font-size: 10px; white-space: nowrap; vertical-align: middle;">
+    Page ${pageNumber} of ${totalPages}
+  </div>
+</footer>`;
+}
+
 module.exports = {
   generateReviewPdf,
   decodeHtmlEntities,
@@ -601,4 +620,5 @@ module.exports = {
   normalizePdfCode,
   getMonospaceFont,
   formatIstTimestamp,
+  getPdfFooterHtml,
 };

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Sparkles, CheckCircle2, Zap, Copy, Check } from 'lucide-react';
+import React from 'react';
+import { Sparkles, CheckCircle2 } from 'lucide-react';
 import { sanitizeCodeSnippet } from '../../utils/sanitizer';
 
 /**
@@ -14,15 +14,10 @@ export default function DiffViewer({
   diffAfter = '',
   filePath = 'source.js',
   lineNumber = 1,
-  ruleId = '',
   patchReady = true,
   isApplied = false,
-  onApply = null,
-  onCopy = null,
   className = '',
 }) {
-  const [internalCopied, setInternalCopied] = useState(false);
-
   // Sanitize both diff branches and truncate lines exceeding 120 characters
   const safeBefore = sanitizeCodeSnippet(diffBefore);
   const safeAfter = sanitizeCodeSnippet(diffAfter);
@@ -30,16 +25,6 @@ export default function DiffViewer({
   const truncateLine = (line) => (line && line.length > 120 ? line.slice(0, 117) + '...' : line);
   const beforeLines = safeBefore.split('\n').map(truncateLine);
   const afterLines = safeAfter.split('\n').map(truncateLine);
-
-  const handleCopy = (e) => {
-    if (onCopy) {
-      onCopy(e);
-    } else {
-      navigator.clipboard?.writeText(safeAfter || safeBefore);
-      setInternalCopied(true);
-      setTimeout(() => setInternalCopied(false), 2000);
-    }
-  };
 
   return (
     <div

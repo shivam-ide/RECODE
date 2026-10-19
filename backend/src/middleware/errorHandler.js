@@ -10,16 +10,16 @@ function redactSecrets(text) {
   if (typeof text !== 'string') return text;
   return text
     // Supabase keys
-    .replace(/sb_secret_[a-zA-Z0-9_\-]+/g, '[REDACTED_SUPABASE_SECRET]')
-    .replace(/sb_publishable_[a-zA-Z0-9_\-]+/g, '[REDACTED_SUPABASE_ANON]')
+    .replace(/sb_secret_[a-zA-Z0-9_-]+/g, '[REDACTED_SUPABASE_SECRET]')
+    .replace(/sb_publishable_[a-zA-Z0-9_-]+/g, '[REDACTED_SUPABASE_ANON]')
     // Google Gemini API keys
     .replace(/AIza[0-9A-Za-z\-_]{35}/g, '[REDACTED_GEMINI_KEY]')
     .replace(/AQ\.[0-9A-Za-z\-_]{40,}/g, '[REDACTED_GEMINI_KEY]')
     // GitHub PAT tokens
-    .replace(/github_pat_[a-zA-Z0-9_\-]+/g, '[REDACTED_GITHUB_PAT]')
+    .replace(/github_pat_[a-zA-Z0-9_-]+/g, '[REDACTED_GITHUB_PAT]')
     .replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_PAT]')
     // Generic JWTs
-    .replace(/eyJ[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+/g, '[REDACTED_JWT]');
+    .replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]');
 }
 
 /**
@@ -78,7 +78,7 @@ function errorHandler(err, req, res, _next) {
       errors = null;
     } else if (errors) {
       errors = redactSecrets(typeof errors === 'string' ? errors : JSON.stringify(errors));
-      try { errors = JSON.parse(errors); } catch (e) { /* keep string */ }
+      try { errors = JSON.parse(errors); } catch { /* keep string */ }
     }
   } else {
     // In development / test, include detailed info and sanitized stack trace

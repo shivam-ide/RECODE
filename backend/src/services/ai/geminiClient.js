@@ -37,7 +37,7 @@ REVIEW METHODOLOGY & SCHEMA CONSTRAINTS:
 - Assign category: "SECURITY", "QUALITY", or "OPTIMIZATION".
 - Provide a concise defect title ("title", e.g., "SQL Injection via Query Concatenation").
 - Provide direct 1-2 sentence explanation of the vulnerability ("what_is_wrong" / "explanation").
-- Explain the exact attack vector or failure scenario ("why_dangerous", e.g. "An attacker can supply '\' OR \'1\'=\'1' to dump entire table data").
+- Explain the exact attack vector or failure scenario ("why_dangerous", e.g. "An attacker can supply '' OR '1'='1' to dump entire table data").
 - Provide exact actionable solution steps ("how_to_fix" / "concreteFix", e.g. "Step 1: Use parameterized placeholders like $1, $2. Step 2: Pass variables via query array.").
 - Provide actionable, minimal remediation code diffs SPECIFIC to the exact flawed line:
   - "diff_before" / "vulnerableSnippet": The exact original vulnerable/flawed line(s) as they appear in the source code.

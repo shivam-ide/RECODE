@@ -189,7 +189,7 @@ async function runMigration() {
     console.log('\n🎉 ALL MODULE 3 MIGRATIONS & VERIFICATIONS PASSED SUCCESSFULLY!');
   } catch (error) {
     console.error('❌ Migration failed:', error);
-    try { await client.end(); } catch (e) {}
+    try { await client.end(); } catch {}
     process.exit(1);
   }
 }

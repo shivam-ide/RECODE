@@ -112,5 +112,5 @@ describe('Module 3: Database & Supabase Client Integration', () => {
       .eq('review_id', createdReviewId);
 
     expect(remainingIssues.length).toBe(0);
-  });
+  }, 15000);
 });

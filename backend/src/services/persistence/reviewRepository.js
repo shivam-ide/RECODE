@@ -435,7 +435,7 @@ async function getReviewHistory(userOrGuestContext = {}) {
       );
     }
     reviews = data || [];
-  } catch (err) {
+  } catch {
     // In-memory fallback
     const all = Array.from(inMemoryReviews.values());
     reviews = all.filter((r) => {

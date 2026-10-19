@@ -1,6 +1,8 @@
 const express = require('express');
 const { optionalAuth } = require('../middleware/authMiddleware');
+const reviewController = require('../controllers/reviewController');
 const {
+  runAudit,
   runCodeReview,
   runReview,
   getReviewDetails,
@@ -8,14 +10,14 @@ const {
   deleteReview,
   downloadReviewPdf,
   downloadReviewReadme,
-} = require('../controllers/reviewController');
+} = reviewController;
 
 const router = express.Router();
 
 // Apply optionalAuth across review routes to populate req.user from Bearer token
 router.use(optionalAuth);
 
-const reviewHandler = runReview || runCodeReview;
+const reviewHandler = runAudit || runReview || runCodeReview;
 
 /**
  * @route   POST /api/v1/reviews/run

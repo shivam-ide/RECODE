@@ -260,6 +260,7 @@ async function downloadReviewReadme(req, res, next) {
 }
 
 module.exports = {
+  runAudit: runCodeReview,
   runCodeReview,
   runReview: runCodeReview,
   getReviewDetails,

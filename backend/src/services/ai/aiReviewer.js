@@ -199,7 +199,6 @@ async function reviewCodeWithGemini({
     const uniqueModels = [...new Set(candidateModels.map((m) => (m.startsWith('models/') ? m : `models/${m}`)))];
 
     let response = null;
-    let successfulModel = model;
     let lastError = null;
 
     for (const currentModel of uniqueModels) {
@@ -215,7 +214,6 @@ async function reviewCodeWithGemini({
           },
         });
         response = await executeWithTimeout(generatePromise, effectiveTimeout);
-        successfulModel = currentModel;
         break;
       } catch (err) {
         lastError = err;

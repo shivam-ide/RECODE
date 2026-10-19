@@ -61,8 +61,10 @@ app.get('/api/v1/health/standardized', (req, res) => {
 });
 
 // 7. Core Feature Routes
-app.use(['/api/v1/reviews', '/api/v1/api/v1/reviews', '/api/reviews', '/api/review'], reviewRoutes);
-app.use(['/api/v1/submissions', '/api/v1/api/v1/submissions', '/api/submissions', '/api/submission'], submissionRoutes);
+app.use('/api/v1/reviews', reviewRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/v1/submissions', submissionRoutes);
+app.use('/api/submissions', submissionRoutes);
 
 // 8. Route Not Found (404) Handler
 app.use(notFoundHandler);

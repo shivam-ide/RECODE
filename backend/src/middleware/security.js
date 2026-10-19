@@ -670,7 +670,7 @@ function payloadClamp({ maxBytes = MAX_PAYLOAD_BYTES } = {}) {
             }
           );
         }
-      } catch (e) {
+      } catch {
         // Continue if cannot measure serialized body
       }
     }

@@ -543,33 +543,42 @@ export default function SubmissionPage() {
 
       let res;
       const targetUrl = API_BASE_URL ? `${API_BASE_URL}/api/v1/reviews/run` : '/api/v1/reviews/run';
+      const fallbackUrl = targetUrl.startsWith('http') ? '/api/v1/reviews/run' : 'http://localhost:5000/api/v1/reviews/run';
+
       try {
         res = await fetch(targetUrl, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
         });
-      } catch (fetchErr) {
-        // Fallback retry using relative proxy path if absolute URL fetch failed (e.g. CORS/network)
-        if (API_BASE_URL) {
-          try {
-            res = await fetch('/api/v1/reviews/run', {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(payload),
-            });
-          } catch (proxyErr) {
-            throw fetchErr;
+      } catch {
+        res = null;
+      }
+
+      // If initial fetch failed with network error or 404, attempt fallbackUrl
+      if (!res || res.status === 404) {
+        try {
+          const fallbackRes = await fetch(fallbackUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          });
+          if (fallbackRes.ok || !res) {
+            res = fallbackRes;
           }
-        } else {
-          throw fetchErr;
+        } catch {
+          // Keep earlier res if available
         }
+      }
+
+      if (!res) {
+        throw new Error('Failed to connect to Re:Code review server on both proxy and direct port 5000.');
       }
 
       let responseData = {};
       try {
         responseData = await res.json();
-      } catch (jsonErr) {
+      } catch {
         responseData = {};
       }
 
