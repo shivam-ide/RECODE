@@ -801,22 +801,6 @@ export default function ReviewDashboardPage() {
             </button>
 
             <button
-              onClick={handleDownloadPdf}
-              className="hidden sm:flex items-center gap-1.5 h-8 px-3 bg-[#181818] border border-[#303030] rounded-lg text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727] transition-colors text-xs font-medium cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden xl:inline">Download PDF</span>
-            </button>
-
-            <button
-              onClick={handleExportReadme}
-              className="hidden sm:flex items-center gap-1.5 h-8 px-3 bg-[#181818] border border-[#303030] rounded-lg text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727] transition-colors text-xs font-medium cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[#02C8F0]" />
-              <span className="hidden xl:inline">Export README</span>
-            </button>
-
-            <button
               onClick={() => navigate('/submit')}
               className="flex items-center h-8 px-3.5 bg-[#F1F1F1] text-[#0F0F0F] text-xs font-semibold rounded-lg hover:bg-white transition-colors cursor-pointer"
             >
@@ -1008,32 +992,35 @@ export default function ReviewDashboardPage() {
                 </span>
               </div>
 
-              {/* Search Input */}
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 text-[#717171] w-4 h-4" />
-                <input
-                  id="fileSearchInput"
-                  type="text"
-                  placeholder="Filter files..."
-                  value={fileSearchQuery}
-                  onChange={(e) => setFileSearchQuery(e.target.value)}
-                  className="w-full bg-[#212121] border border-[#303030] rounded-lg py-1.5 pl-8 pr-3 text-xs font-mono text-[#F1F1F1] placeholder:text-[#717171] focus:outline-none focus:border-[#3F3F3F] transition-colors"
-                />
-              </div>
+              {/* Multi-file Search & Filter Controls (only rendered when total files > 1) */}
+              {allFiles.length > 1 && (
+                <>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-2.5 text-[#717171] w-4 h-4" />
+                    <input
+                      id="fileSearchInput"
+                      type="text"
+                      placeholder="Filter files..."
+                      value={fileSearchQuery}
+                      onChange={(e) => setFileSearchQuery(e.target.value)}
+                      className="w-full bg-[#212121] border border-[#303030] rounded-lg py-1.5 pl-8 pr-3 text-xs font-mono text-[#F1F1F1] placeholder:text-[#717171] focus:outline-none focus:border-[#3F3F3F] transition-colors"
+                    />
+                  </div>
 
-              {/* Issues Only Toggle */}
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  id="issuesOnlyToggle"
-                  type="checkbox"
-                  checked={issuesOnly}
-                  onChange={(e) => setIssuesOnly(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded bg-[#212121] border border-[#303030] accent-[#FF0033] cursor-pointer"
-                />
-                <span className="text-xs text-[#AAAAAA]">
-                  Show files with issues only ({allFiles.filter((f) => (f.issues_count || 0) > 0).length || (allIssues.length ? 1 : 0)})
-                </span>
-              </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      id="issuesOnlyToggle"
+                      type="checkbox"
+                      checked={issuesOnly}
+                      onChange={(e) => setIssuesOnly(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded bg-[#212121] border border-[#303030] accent-[#FF0033] cursor-pointer"
+                    />
+                    <span className="text-xs text-[#AAAAAA]">
+                      Show files with issues only ({allFiles.filter((f) => (f.issues_count || 0) > 0).length || (allIssues.length ? 1 : 0)})
+                    </span>
+                  </label>
+                </>
+              )}
 
               {/* Directory Tree */}
               <div className="space-y-1.5 font-mono text-xs pt-1" id="fileTreeContainer">
@@ -1143,19 +1130,19 @@ export default function ReviewDashboardPage() {
                     type="button"
                     data-filter="all"
                     onClick={() => setSeverityFilter('all')}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                       severityFilter === 'all'
                         ? 'bg-[#F1F1F1] text-[#0F0F0F]'
                         : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
                     }`}
                   >
-                    All ({activeFileIssues.length})
+                    All ({allIssues.length})
                   </button>
                   <button
                     type="button"
                     data-filter="critical"
                     onClick={() => setSeverityFilter('critical')}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                       severityFilter === 'critical'
                         ? 'bg-[#FF4D4D] text-[#0F0F0F]'
                         : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
@@ -1167,7 +1154,7 @@ export default function ReviewDashboardPage() {
                     type="button"
                     data-filter="high"
                     onClick={() => setSeverityFilter('high')}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                       severityFilter === 'high'
                         ? 'bg-[#FFA116] text-[#0F0F0F]'
                         : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
@@ -1177,15 +1164,39 @@ export default function ReviewDashboardPage() {
                   </button>
                   <button
                     type="button"
+                    data-filter="medium"
+                    onClick={() => setSeverityFilter('medium')}
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
+                      severityFilter === 'medium'
+                        ? 'bg-[#FFD600] text-[#0F0F0F]'
+                        : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
+                    }`}
+                  >
+                    Medium ({medCount})
+                  </button>
+                  <button
+                    type="button"
                     data-filter="low"
                     onClick={() => setSeverityFilter('low')}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                       severityFilter === 'low'
                         ? 'bg-[#78DFFF] text-[#0F0F0F]'
                         : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
                     }`}
                   >
                     Low ({lowCount})
+                  </button>
+                  <button
+                    type="button"
+                    data-filter="info"
+                    onClick={() => setSeverityFilter('info')}
+                    className={`px-3 py-1 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap ${
+                      severityFilter === 'info'
+                        ? 'bg-[#AAAAAA] text-[#0F0F0F]'
+                        : 'bg-[#212121] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727]'
+                    }`}
+                  >
+                    Info ({infoCount})
                   </button>
                 </div>
 
@@ -1445,9 +1456,13 @@ export default function ReviewDashboardPage() {
                 {filteredIssues.length === 0 && (
                   <div className="bg-[#181818] border border-[#303030] rounded-xl p-8 text-center">
                     <CheckCircle2 className="w-10 h-10 text-[#27C93F] mx-auto mb-2" />
-                    <h3 className="text-sm font-semibold text-[#F1F1F1]">No Issues in Current View</h3>
+                    <h3 className="text-sm font-semibold text-[#F1F1F1]">
+                      {allIssues.length === 0 ? 'All Checks Passed' : 'No Issues in Current View'}
+                    </h3>
                     <p className="text-xs text-[#717171] mt-1">
-                      No findings match the selected severity filter "{severityFilter}".
+                      {severityFilter === 'all' || allIssues.length === 0
+                        ? 'No issues detected across all severity levels'
+                        : `No findings match the selected severity filter "${severityFilter}".`}
                     </p>
                   </div>
                 )}
@@ -1461,28 +1476,32 @@ export default function ReviewDashboardPage() {
           {/* Sticky Bottom Action Dock */}
           <aside className="sticky bottom-4 z-40 bg-[#141414] border border-[#303030] rounded-xl py-3 px-4 lg:px-6 flex flex-col md:flex-row items-center justify-between gap-3 shadow-2xl">
             <div className="flex items-center gap-3">
-              <div className="w-2.5 h-2.5 rounded-full bg-[#FF0033] animate-pulse" />
+              <div
+                className={`w-2.5 h-2.5 rounded-full ${
+                  allIssues.length === 0 ? 'bg-[#27C93F]' : 'bg-[#FF0033] animate-pulse'
+                }`}
+              />
               <div className="font-mono text-xs text-[#AAAAAA]">
                 <span className="text-[#F1F1F1] font-semibold">
                   Project Health: {healthScore}/100 (Grade {grade})
                 </span>{' '}
                 •{' '}
-                <span className="text-[#FF4D4D] font-medium">
-                  {critCount} Critical Issues
-                </span>{' '}
-                require remediation before production deploy
+                {allIssues.length === 0 ? (
+                  <span className="text-[#27C93F] font-medium">
+                    All checks passed • Ready for production deploy
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-[#FF4D4D] font-medium">
+                      {critCount} Critical Issues
+                    </span>{' '}
+                    require remediation before production deploy
+                  </>
+                )}
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => navigate('/submit')}
-                className="px-3 py-1.5 rounded-lg bg-[#212121] border border-[#303030] text-[#AAAAAA] hover:text-[#F1F1F1] hover:bg-[#272727] text-xs font-medium transition-colors cursor-pointer"
-              >
-                Back to Submission
-              </button>
-
               <button
                 type="button"
                 onClick={handleDownloadPdf}
@@ -1501,19 +1520,21 @@ export default function ReviewDashboardPage() {
                 <span>Export README</span>
               </button>
 
-              <button
-                type="button"
-                onClick={handleApplyAllSafeFixes}
-                disabled={allSafeFixesApplied}
-                className={`px-4 py-1.5 rounded-lg font-bold text-xs transition-colors flex items-center gap-1.5 shadow-lg ${
-                  allSafeFixesApplied
-                    ? 'bg-[#27C93F]/20 text-[#27C93F] border border-[#27C93F]/40 cursor-default'
-                    : 'bg-[#27C93F] text-[#0F0F0F] hover:bg-[#30E04B] cursor-pointer'
-                }`}
-              >
-                <Check className="w-4 h-4" />
-                <span>{allSafeFixesApplied ? '✓ All Safe Fixes Applied' : 'Apply All Safe Fixes'}</span>
-              </button>
+              {allIssues.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleApplyAllSafeFixes}
+                  disabled={allSafeFixesApplied}
+                  className={`px-4 py-1.5 rounded-lg font-bold text-xs transition-colors flex items-center gap-1.5 shadow-lg ${
+                    allSafeFixesApplied
+                      ? 'bg-[#27C93F]/20 text-[#27C93F] border border-[#27C93F]/40 cursor-default'
+                      : 'bg-[#27C93F] text-[#0F0F0F] hover:bg-[#30E04B] cursor-pointer'
+                  }`}
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{allSafeFixesApplied ? '✓ All Safe Fixes Applied' : 'Apply All Safe Fixes'}</span>
+                </button>
+              )}
             </div>
           </aside>
 
