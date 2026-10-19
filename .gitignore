@@ -1,60 +1,81 @@
-# Dependency directories
-node_modules/
-jspm_packages/
-
-# Environment and sensitive keys
+# =======================================================
+# Environment Variables & Secrets (CRITICAL)
+# =======================================================
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-*.env
+.env.*
+!.env.example
 *.pem
 *.key
+*.cert
 
-# Production build and distribution outputs
+# =======================================================
+# Dependencies & Package Managers
+# =======================================================
+node_modules/
+/.pnp
+.pnp.js
+package-lock.json.bak
+yarn-error.log*
+npm-debug.log*
+pnpm-debug.log*
+
+# =======================================================
+# Build Outputs & Production Bundles
+# =======================================================
 dist/
 build/
 out/
 .next/
-.nuxt/
-.svelte-kit/
+*.tsbuildinfo
 
-# Re:Code Temporary Audit Cache & Engine Temp Files
+# =======================================================
+# Generated Reports & Temp Test Files (PDFs / Exports)
+# =======================================================
+# Keep test-generated PDFs out of the Git tree
+recode_audit_*.pdf
+*.pdf
+temp/
+tmp/
+uploads/
+downloads/
 .audit_cache/
 audit-cache/
 *audit-cache*
 audit-temp/
 *.audit.json
-tmp/
-temp/
 *.tmp
 
-# Logs
+# =======================================================
+# Testing, Coverage & Playwright / Browser Drivers
+# =======================================================
+coverage/
+.nyc_output/
+playwright-report/
+blob-report/
+test-results/
+playwright/.cache/
+*.lcov
+
+# =======================================================
+# Logs & Runtime State
+# =======================================================
 logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Testing & Coverage
-coverage/
-.nyc_output/
-
-# Operating System Artifacts
+# =======================================================
+# OS & IDE System Files
+# =======================================================
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-# IDE and Editor configurations
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 .vscode/*
-!.vscode/extensions.json
 !.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
