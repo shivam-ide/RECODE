@@ -26,7 +26,7 @@ describe('Module 5: Submission Validators & SSRF Security Defense', () => {
       expect(res.parserReady).toBe(true);
     });
 
-    it('should accept all supported languages: javascript, typescript, python, java, cpp', () => {
+    it('should accept all supported languages: javascript, typescript, python, java, cpp, sql', () => {
       SUPPORTED_LANGUAGES.forEach((lang) => {
         const res = validateDirectSnippet('// sample code\nconst x = 1;', lang);
         expect(res.isValid).toBe(true);
@@ -34,11 +34,16 @@ describe('Module 5: Submission Validators & SSRF Security Defense', () => {
       });
     });
 
-    it('should normalize language aliases (js, ts, py, c++)', () => {
+    it('should normalize language aliases (js, ts, py, c++, postgres, mysql, sqlite)', () => {
       expect(validateDirectSnippet('console.log(1)', 'js').language).toBe('javascript');
       expect(validateDirectSnippet('let x: number = 1;', 'ts').language).toBe('typescript');
       expect(validateDirectSnippet('def run(): pass', 'py').language).toBe('python');
       expect(validateDirectSnippet('#include <iostream>', 'c++').language).toBe('cpp');
+      expect(validateDirectSnippet('SELECT * FROM users;', 'sql').language).toBe('sql');
+      expect(validateDirectSnippet('SELECT * FROM users;', 'postgres').language).toBe('sql');
+      expect(validateDirectSnippet('SELECT * FROM users;', 'postgresql').language).toBe('sql');
+      expect(validateDirectSnippet('SELECT * FROM users;', 'mysql').language).toBe('sql');
+      expect(validateDirectSnippet('SELECT * FROM users;', 'sqlite').language).toBe('sql');
     });
 
     it('should reject unsupported programming languages with HTTP 400', () => {

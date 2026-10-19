@@ -29,6 +29,7 @@ const EXTENSION_LANGUAGE_MAP = {
   '.c': 'cpp',
   '.h': 'cpp',
   '.hpp': 'cpp',
+  '.sql': 'sql',
 };
 
 const ALLOWED_EXTENSIONS = Object.keys(EXTENSION_LANGUAGE_MAP);
@@ -197,7 +198,7 @@ function scoreFilePath(filePath) {
   // E. Priority Executable Code (.java, .js, .ts, .py) in src/, lib/, main packages
   const dotIdx = fileName.lastIndexOf('.');
   const ext = dotIdx !== -1 ? fileName.substring(dotIdx) : '';
-  if (['.java', '.js', '.ts', '.py', '.jsx', '.tsx'].includes(ext)) {
+  if (['.java', '.js', '.ts', '.py', '.jsx', '.tsx', '.sql'].includes(ext)) {
     score += 40;
   }
   if (norm.includes('src/') || norm.includes('lib/') || norm.includes('main/') || norm.includes('packages/')) {
@@ -417,7 +418,7 @@ function filterCandidateFiles(treeNodes, options = {}) {
   // Enforce Resource Limit 1: Zero matching files
   if (validCandidates.length === 0) {
     throw new AppError(
-      'Repository contains no eligible code files matching supported languages (JavaScript, TypeScript, Python, Java, C++).',
+      'Repository contains no eligible code files matching supported languages (JavaScript, TypeScript, Python, Java, C++, SQL).',
       400,
       { supportedExtensions: ALLOWED_EXTENSIONS }
     );

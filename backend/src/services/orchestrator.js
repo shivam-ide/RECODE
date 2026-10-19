@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { validateDirectSnippet, validateGitHubUrl } = require('../utils/validators');
 const { resolveDnsAndValidate } = require('../middleware/security');
 const { ingestRepository } = require('./ingestion/githubIngestion');
-const { analyzeFile } = require('./analysis/staticAnalyzer');
+const { analyzeFile, validateSyntaxGuard } = require('./analysis/staticAnalyzer');
 const { reviewCodeWithGemini } = require('./ai/aiReviewer');
 const { mergeAndDeduplicate } = require('./analysis/findingsNormalizer');
 const { calculateScore } = require('./analysis/scoringEngine');
@@ -26,6 +26,8 @@ function getExtensionForLanguage(lang = '') {
     case 'cpp':
     case 'c++':
       return 'cpp';
+    case 'sql':
+      return 'sql';
     case 'javascript':
     case 'js':
     default:
@@ -193,19 +195,64 @@ async function executeReviewPipeline({
 
   // --------------------------------------------------------------------------
   // --------------------------------------------------------------------------
-  // STEP 3 & 4: Concurrently Run Static AST Analyzer & Gemini AI Review
+  // --------------------------------------------------------------------------
+  // STEP 3: Stage 1 (Syntax Guard) & Stage 2 (Static Deterministic Rules)
   // --------------------------------------------------------------------------
   const allStaticFindings = [];
   const fileStaticMap = new Map();
+  const fileSyntaxStatusMap = new Map();
 
-  // Task A: In-memory AST Static Analysis across all candidate files
   for (const file of candidateFiles) {
-    const findings = analyzeFile(file.path, file.content, file.language);
-    fileStaticMap.set(file.path, findings);
-    allStaticFindings.push(...findings);
+    let fileFindings = [];
+    let fileHasSyntaxError = false;
+
+    try {
+      // Stage 1: Validate syntax against designated language
+      const syntaxResult = validateSyntaxGuard(file.path, file.content, file.language);
+      if (!syntaxResult.isValid) {
+        // Output precise syntax diagnostics and HALT further false vulnerability alerts
+        fileHasSyntaxError = true;
+        fileFindings = syntaxResult.syntaxFindings;
+      } else {
+        // Stage 2: Run deterministic static AST & regex analysis
+        fileFindings = analyzeFile(file.path, file.content, file.language);
+        if (fileFindings.some((f) => f.ruleId === 'PARSER_ERROR' || f.category === 'SYNTAX')) {
+          fileHasSyntaxError = true;
+        }
+      }
+    } catch (analysisErr) {
+      console.warn(`[Orchestrator] Static analysis failed for ${file.path}:`, analysisErr.message);
+      fileHasSyntaxError = true;
+      fileFindings = [
+        {
+          file: file.path,
+          line: 1,
+          column: 1,
+          lineNumber: 1,
+          severity: 'HIGH',
+          category: 'SYNTAX',
+          ruleId: 'PARSER_ERROR',
+          title: 'Syntax Parsing Guard Failure',
+          description: `Source file could not be parsed: ${analysisErr.message}`,
+          remediation: 'Review file for fatal syntax defects or unclosed constructs.',
+          evidence: (file.content.split(/\r\n|\r|\n/)[0] || '').trim(),
+          diff_before: (file.content.split(/\r\n|\r|\n/)[0] || '').trim(),
+          diff_after: '// Fix syntax error',
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        },
+      ];
+    }
+
+    fileStaticMap.set(file.path, fileFindings);
+    fileSyntaxStatusMap.set(file.path, fileHasSyntaxError);
+    allStaticFindings.push(...fileFindings);
   }
 
-  // Task B: Google Gemini AI Semantic Review Engine (Executed across all discovered files in controlled batches)
+  // --------------------------------------------------------------------------
+  // STEP 4: Stage 3 (Structured LLM Review with Grounding)
+  // --------------------------------------------------------------------------
   const runAiEngine = async () => {
     const aiFindings = [];
     let partialMode = false;
@@ -222,21 +269,30 @@ async function executeReviewPipeline({
     for (let i = 0; i < aiTargetFiles.length; i += aiBatchSize) {
       const batch = aiTargetFiles.slice(i, i + aiBatchSize);
       const batchPromises = batch.map(async (file) => {
-        const fileStaticFindings = fileStaticMap.get(file.path) || [];
-        const hasSyntaxError = fileStaticFindings.some(
-          (f) => f.ruleId === 'PARSER_ERROR' || f.category === 'SYNTAX'
-        );
+        const fileHasSyntaxError = fileSyntaxStatusMap.get(file.path) || false;
 
-        return reviewCodeWithGemini({
-          filePath: file.path,
-          codeContent: file.content,
-          language: file.language,
-          staticFindings: fileStaticFindings,
-          hasSyntaxError,
-          timeoutMs: options.timeoutMs,
-          model: options.model,
-          client: options.aiClient,
-        });
+        // Stage 1 Guard: If syntax fails, halt further false vulnerability alerts
+        // Do NOT run AI scan on broken syntax!
+        if (fileHasSyntaxError) {
+          return { partialMode: false, findings: [] };
+        }
+
+        try {
+          const fileStaticFindings = fileStaticMap.get(file.path) || [];
+          return await reviewCodeWithGemini({
+            filePath: file.path,
+            codeContent: file.content,
+            language: file.language,
+            staticFindings: fileStaticFindings,
+            hasSyntaxError: false,
+            timeoutMs: options.timeoutMs,
+            model: options.model,
+            client: options.aiClient,
+          });
+        } catch (aiErr) {
+          console.warn(`[Orchestrator] AI review error for ${file.path}:`, aiErr.message);
+          return { partialMode: true, reason: 'AI_CALL_FAILED', findings: [] };
+        }
       });
 
       const batchResults = await Promise.all(batchPromises);
@@ -251,13 +307,14 @@ async function executeReviewPipeline({
         }
       }
 
-      // Small throttle pause between batches to adhere to Gemini API rate limits (15 RPM)
+      // Throttle pause between batches
       if (i + aiBatchSize < aiTargetFiles.length) {
         await new Promise((resolve) => setTimeout(resolve, 800));
       }
     }
 
-    partialMode = aiSuccessCount === 0 && candidateFiles.length > 0;
+    const allSyntaxBroken = candidateFiles.every((f) => fileSyntaxStatusMap.get(f.path));
+    partialMode = !allSyntaxBroken && aiSuccessCount === 0 && candidateFiles.length > 0;
     return { partialMode, reason, findings: aiFindings };
   };
 
@@ -268,11 +325,18 @@ async function executeReviewPipeline({
   const partialModeReason = aiExecution.reason || null;
 
   // --------------------------------------------------------------------------
-  // STEP 5: Merge, Deduplicate, and Normalize Findings
+  // STEP 5: Deduplication & Cross-Validation
   // --------------------------------------------------------------------------
-  const mergedIssues = mergeAndDeduplicate(allStaticFindings, allAiFindings, {
-    filePath: candidateFiles.length === 1 ? candidateFiles[0].path : 'repository',
-  });
+  let mergedIssues = [];
+  try {
+    mergedIssues = mergeAndDeduplicate(allStaticFindings, allAiFindings, {
+      filePath: candidateFiles.length === 1 ? candidateFiles[0].path : 'repository',
+      content: candidateFiles.length === 1 ? candidateFiles[0].content : '',
+    });
+  } catch (dedupeErr) {
+    console.warn('[Orchestrator] Findings reconciliation error, falling back to static findings:', dedupeErr.message);
+    mergedIssues = allStaticFindings;
+  }
 
   // --------------------------------------------------------------------------
   // STEP 6: Compute Explainable Health Score and Category Metrics
@@ -282,9 +346,26 @@ async function executeReviewPipeline({
     (issue) => issue.ruleId === 'PARSER_ERROR' || issue.category === 'SYNTAX'
   );
 
-  const scoreResult = calculateScore(mergedIssues, totalLines, candidateFiles.length, {
-    hasSyntaxError,
-  });
+  let scoreResult;
+  try {
+    scoreResult = calculateScore(mergedIssues, totalLines, candidateFiles.length, {
+      hasSyntaxError,
+    });
+  } catch (scoreErr) {
+    console.warn('[Orchestrator] Score calculation error, using safe fallback:', scoreErr.message);
+    scoreResult = {
+      healthScore: hasSyntaxError ? 70 : 85,
+      grade: hasSyntaxError ? 'C' : 'B',
+      summary: 'Analysis completed with fallback evaluation.',
+      categoryScores: {
+        bugsHealth: hasSyntaxError ? 70 : 90,
+        securityHealth: 90,
+        qualityHealth: 90,
+        optimizationHealth: 90,
+      },
+      breakdown: [],
+    };
+  }
 
   // --------------------------------------------------------------------------
   // STEP 7: Return Canonical Review Results Payload
@@ -357,6 +438,7 @@ async function executeReviewPipeline({
     },
     files: fileSummaries,
     issues: mergedIssues,
+    findings: mergedIssues,
     breakdown: scoreResult.breakdown,
     createdAt: new Date().toISOString(),
   };

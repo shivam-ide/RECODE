@@ -1,7 +1,13 @@
 const crypto = require('crypto');
 const request = require('supertest');
 const app = require('../src/app');
-const { generateReviewPdf } = require('../src/services/reports/pdfGenerator');
+const {
+  generateReviewPdf,
+  normalizePdfCode,
+  normalizePdfText,
+  getMonospaceFont,
+  formatIstTimestamp,
+} = require('../src/services/reports/pdfGenerator');
 const { generateSuggestedReadme } = require('../src/services/reports/readmeGenerator');
 const { saveReviewResult } = require('../src/services/persistence/reviewRepository');
 const { supabaseAdmin } = require('../src/config/supabaseClient');
@@ -84,6 +90,117 @@ describe('Module 17: Reports & Exports (PDF & README Generation)', () => {
       expect(Buffer.isBuffer(buffer)).toBe(true);
       expect(buffer.length).toBeGreaterThan(3000);
       expect(buffer.slice(0, 5).toString('ascii')).toBe('%PDF-');
+    });
+
+    it('should normalize and preserve raw code characters (backticks, ${...}, quotes, %, wildcards) without corruption', () => {
+      const rawCode = "const query = `SELECT * FROM users WHERE code LIKE '%9812' AND id = ${user.id} AND val = '{test}' AND list = '[1,2]' AND entity = s'`;";
+      const sanitized = normalizePdfCode(rawCode);
+
+      expect(sanitized).toContain("'%9812'");
+      expect(sanitized).toContain('${user.id}');
+      expect(sanitized).toContain("'{test}'");
+      expect(sanitized).toContain("'[1,2]'");
+      expect(sanitized).toContain("s'");
+      expect(sanitized).not.toContain('1498121');
+      expect(sanitized).toContain('`SELECT * FROM users');
+    });
+
+    it('should decode HTML entities and normalize smart quotes and unicode dashes in code snippets', () => {
+      const rawHtmlCode = 'const expr = &quot;SELECT &apos;%9812&apos; FROM &lt;tbl&gt; WHERE a &amp; b&quot;;\nconst smart = ‘single’ and “double” and `backtick`;';
+      const sanitized = normalizePdfCode(rawHtmlCode);
+
+      expect(sanitized).toContain('const expr = "SELECT \'%9812\' FROM <tbl> WHERE a & b";');
+      expect(sanitized).toContain("const smart = 'single' and \"double\" and `backtick`;");
+      expect(sanitized).not.toContain('&quot;');
+      expect(sanitized).not.toContain('&apos;');
+      expect(sanitized).not.toContain('&lt;');
+      expect(sanitized).not.toContain('&gt;');
+      expect(sanitized).not.toContain('&amp;');
+    });
+
+    it('should normalize special symbols in general PDF text (arrows, checks, quotes)', () => {
+      const rawText = '✓ Clean &amp; secure — status: 100% “verified” → ready for deploy';
+      const sanitized = normalizePdfText(rawText);
+
+      expect(sanitized).toContain('[OK] Clean & secure - status: 100% "verified" -> ready for deploy');
+      expect(sanitized).not.toContain('&amp;');
+    });
+
+    it('should resolve a valid monospace font family for code rendering', () => {
+      const PDFDocument = require('pdfkit');
+      const doc = new PDFDocument();
+      const font = getMonospaceFont(doc);
+
+      expect(['ReCodeMono', 'Courier']).toContain(font);
+    });
+
+    it('should generate a PDF containing complex code with %9812, backticks, template literals, and long lines without crashing', async () => {
+      const reviewData = {
+        projectName: 'Encoding & Layout Edge Case Audit',
+        healthScore: 75,
+        grade: 'B',
+        sourceType: 'direct',
+        files: [{ path: 'edgeCases.js', language: 'javascript', linesCount: 100, issuesCount: 1 }],
+        issues: [
+          {
+            severity: 'CRITICAL',
+            category: 'SECURITY',
+            title: 'Dynamic SQL with %9812 and Template Literals',
+            ruleId: 'SQL_INJECTION',
+            file: 'edgeCases.js',
+            line: 45,
+            description: 'Direct concatenation inside template literal `SELECT * WHERE code LIKE \'%9812\'`.',
+            diff_before: "const q = `SELECT * FROM users WHERE code LIKE '%9812' AND id = ${user.id} AND category IN ('s', 's\\'') AND filter = '${query}'`;",
+            diff_after: "const q = await db.query('SELECT * FROM users WHERE code LIKE $1 AND id = $2', ['%9812', user.id]);\n// Parameterized prepared query with template literal replacement",
+            engine_source: 'HYBRID',
+          },
+          {
+            severity: 'HIGH',
+            category: 'QUALITY',
+            title: 'Very Long Function Line Requiring Horizontal Wrap Safeguards',
+            ruleId: 'LONG_STATEMENT',
+            file: 'edgeCases.js',
+            line: 78,
+            description: 'Long statement exceeding typical line widths to test horizontal text wrapping.',
+            diff_before: "const processTransaction = async (accountId, transactionType, transactionAmount, sourceCurrency, destinationCurrency, metadataTags, exchangeRateMultiplier, auditTraceSessionToken) => { return executeInternalTransfer(accountId, transactionType, transactionAmount); };",
+            diff_after: "const processTransaction = async (accountId, transactionType, transactionAmount) => {\n  return executeInternalTransfer(accountId, transactionType, transactionAmount);\n};",
+            engine_source: 'STATIC',
+          },
+        ],
+      };
+
+      const buffer = await generateReviewPdf(reviewData);
+
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect(buffer.length).toBeGreaterThan(4000);
+      expect(buffer.slice(0, 5).toString('ascii')).toBe('%PDF-');
+    });
+
+    it('should format timestamps strictly in Indian Standard Time (Asia/Kolkata) with IST label', () => {
+      // 06:31:03 UTC is 12:01:03 IST (+05:30)
+      const utcIso = '2026-10-19T06:31:03.000Z';
+      const formatted = formatIstTimestamp(utcIso);
+
+      expect(formatted).toBe('Mon, 19 Oct 2026, 12:01:03 PM IST');
+      expect(formatted).toContain('IST');
+      expect(formatted).not.toContain('GMT');
+      expect(formatted).not.toContain('UTC');
+    });
+
+    it('should format Date objects, numerical timestamps, and offset strings consistently in IST', () => {
+      const dateObj = new Date('2026-10-19T06:31:03.000Z');
+      const offsetStr = '2026-10-19T12:01:03+05:30';
+      const numTimestamp = dateObj.getTime();
+
+      expect(formatIstTimestamp(dateObj)).toBe('Mon, 19 Oct 2026, 12:01:03 PM IST');
+      expect(formatIstTimestamp(offsetStr)).toBe('Mon, 19 Oct 2026, 12:01:03 PM IST');
+      expect(formatIstTimestamp(numTimestamp)).toBe('Mon, 19 Oct 2026, 12:01:03 PM IST');
+    });
+
+    it('should gracefully handle invalid or empty date inputs', () => {
+      expect(formatIstTimestamp(null)).toBe('');
+      expect(formatIstTimestamp(undefined)).toBe('');
+      expect(formatIstTimestamp('invalid-date-string')).toBe('');
     });
   });
 

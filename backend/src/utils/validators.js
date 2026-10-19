@@ -4,7 +4,7 @@ const { isPrivateIp } = require('../middleware/security');
 /**
  * Supported programming languages for deterministic AST and AI reviews
  */
-const SUPPORTED_LANGUAGES = ['javascript', 'typescript', 'python', 'java', 'cpp'];
+const SUPPORTED_LANGUAGES = ['javascript', 'typescript', 'python', 'java', 'cpp', 'sql'];
 
 /**
  * Common language aliases to normalized standard identifiers
@@ -15,6 +15,10 @@ const LANGUAGE_ALIASES = {
   py: 'python',
   'c++': 'cpp',
   cplusplus: 'cpp',
+  postgres: 'sql',
+  postgresql: 'sql',
+  mysql: 'sql',
+  sqlite: 'sql',
 };
 
 /**

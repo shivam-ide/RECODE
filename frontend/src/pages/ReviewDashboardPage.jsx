@@ -24,6 +24,7 @@ import { GUEST_SESSION_STORAGE_KEY } from '../services/supabaseAuth';
 import { useAuth } from '../services/useAuth';
 
 import { API_BASE_URL } from '../config/api';
+import { formatIstTimestamp } from '../utils/dateFormatter';
 
 /**
  * Format raw compiler messages into human-readable remediation text for syntax error cards
@@ -114,6 +115,12 @@ function getIssueDiff(issue, activeFile) {
 
   // 4. SQL_INJECTION (CWE-89)
   if (isSql) {
+    if (sourceLine && (sourceLine.includes('||') || sourceLine.includes('EXECUTE') || sourceLine.toLowerCase().includes('select'))) {
+      return wrap({
+        diffBefore: sourceLine,
+        diffAfter: `-- Use parameterized queries or bind variables instead of dynamic concatenation:\n-- e.g. EXECUTE 'SELECT ... WHERE id = $1' USING p_param;`,
+      });
+    }
     const varMatches = (sourceLine || '').match(/[A-Za-z0-9_]+(?=\s*\+)|req\.(?:query|body|params)\.[A-Za-z0-9_]+/g) || ['campusId', 'gradeThreshold'];
     const placeholders = varMatches.map((_, i) => `$${i + 1}`).join(' AND ');
     const params = varMatches.join(', ');
@@ -123,11 +130,54 @@ function getIssueDiff(issue, activeFile) {
     });
   }
 
+  // 4b. SQL_LEADING_WILDCARD / Table Scan Bottleneck
+  if (ruleId.includes('WILDCARD') || title.includes('wildcard') || desc.includes('wildcard')) {
+    return wrap({
+      diffBefore: sourceLine || `WHERE name LIKE '%term%';`,
+      diffAfter: `-- Remove leading wildcard to enable index usage, or utilize full-text search indexes:\nWHERE name LIKE 'term%';`,
+    });
+  }
+
+  // 4c. UNCONSTRAINED_MUTATION (DELETE/UPDATE without WHERE)
+  if (ruleId.includes('UNCONSTRAINED') || ruleId.includes('MUTATION') || title.includes('unconstrained') || desc.includes('unconstrained')) {
+    return wrap({
+      diffBefore: sourceLine || `DELETE FROM audit_logs;`,
+      diffAfter: `DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '90 days';`,
+    });
+  }
+
   // 5. EMPTY_CATCH_BLOCK
   if (ruleId.includes('EMPTY_CATCH') || title.includes('empty catch') || desc.includes('empty catch')) {
     return wrap({
       diffBefore: sourceLine || `} catch (err) {}`,
       diffAfter: `} catch (err) {\n  logger.error("Operation failed", { error: err.message });\n  throw err;\n}`,
+    });
+  }
+
+  // 5b. DEAD_CODE (CWE-561)
+  if (ruleId.includes('DEAD') || title.includes('dead') || desc.includes('dead') || title.includes('unreachable') || desc.includes('unreachable')) {
+    return wrap({
+      diffBefore: sourceLine || `  const deadStatement = true;`,
+      diffAfter: `// Removed unreachable dead code`,
+    });
+  }
+
+  // 5c. UNHANDLED_ASYNC_PROMISE (CWE-391)
+  if (ruleId.includes('PROMISE') || ruleId.includes('ASYNC') || title.includes('promise') || desc.includes('promise')) {
+    return wrap({
+      diffBefore: sourceLine || `fetchData().then(res => res.json());`,
+      diffAfter: sourceLine
+        ? `${sourceLine.replace(/;?\s*$/, '')}.catch(err => console.error("Unhandled promise error:", err));`
+        : `fetchData().then(res => res.json()).catch(err => console.error("Unhandled promise error:", err));`,
+    });
+  }
+
+  // 5d. DOM_XSS (CWE-79)
+  if (ruleId.includes('DOM_XSS') || title.includes('xss') || desc.includes('xss') || title.includes('innerhtml') || desc.includes('innerhtml')) {
+    const textFix = sourceLine ? sourceLine.replace(/innerHTML/g, 'textContent').replace(/outerHTML/g, 'textContent') : `element.textContent = safeUserInput;`;
+    return wrap({
+      diffBefore: sourceLine || `element.innerHTML = userInput;`,
+      diffAfter: textFix,
     });
   }
 
@@ -281,12 +331,8 @@ export default function ReviewDashboardPage() {
   }, [review?.issues, review?.review_issues]);
 
   const reviewedDate = useMemo(() => {
-    const ts = review?.createdAt || review?.created_at || '2026-10-16T12:00:00Z';
-    return new Date(ts).toLocaleDateString('en-US', {
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-    });
+    const ts = review?.createdAt || review?.created_at || new Date();
+    return formatIstTimestamp(ts);
   }, [review?.createdAt, review?.created_at]);
 
   // Severity counts
@@ -1264,6 +1310,12 @@ export default function ReviewDashboardPage() {
                         <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
                           {issue.rule_id || issue.ruleId || 'CODE_DEFECT'}
                         </span>
+
+                        {(issue.cweId || issue.cwe) && (
+                          <span className="px-2 py-0.5 rounded bg-[#9D4EDD]/15 text-[#C77DFF] border border-[#9D4EDD]/35 font-mono">
+                            {issue.cweId || issue.cwe}
+                          </span>
+                        )}
 
                         <span className="px-2 py-0.5 rounded bg-[#212121] text-[#AAAAAA] border border-[#303030]">
                           {categoryOrStandard}

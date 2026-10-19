@@ -24,6 +24,7 @@ import { UserSessionPill } from '../components/common';
 import { useAuth } from '../services/useAuth';
 
 import { API_BASE_URL } from '../config/api';
+import { formatIstTimestamp } from '../utils/dateFormatter';
 
 // Standard fallback mock audits matching 'last page.html' template
 const INITIAL_DEMO_AUDITS = [
@@ -164,20 +165,26 @@ export default function HistoryPage() {
     };
   }, [isGuest, guestSessionId, currentUser, authToken]);
 
-  // Format timestamp helper
+  // Format timestamp helper in IST (Asia/Kolkata)
   const formatScannedTime = (isoString) => {
-    if (!isoString) return { date: 'Recently', time: '12:00 IST' };
+    if (!isoString) return { date: 'Recently', time: '12:00:00 PM IST', full: 'Recently' };
     const dateObj = new Date(isoString);
     if (isNaN(dateObj.getTime())) {
-      return { date: 'Recently', time: '12:00 IST' };
+      return { date: 'Recently', time: '12:00:00 PM IST', full: 'Recently' };
     }
-    const optionsDate = { month: 'short', day: '2-digit', year: 'numeric' };
-    const datePart = dateObj.toLocaleDateString('en-US', optionsDate);
-    const hours = String(dateObj.getHours()).padStart(2, '0');
-    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    const full = formatIstTimestamp(dateObj);
+    const commaIndex = full.indexOf(',', full.indexOf(',') + 1);
+    if (commaIndex !== -1) {
+      return {
+        date: full.slice(0, commaIndex).trim(),
+        time: full.slice(commaIndex + 1).trim(),
+        full,
+      };
+    }
     return {
-      date: datePart,
-      time: `${hours}:${minutes} IST`,
+      date: full,
+      time: 'IST',
+      full,
     };
   };
 

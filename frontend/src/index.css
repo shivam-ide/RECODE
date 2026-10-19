@@ -76,6 +76,73 @@ input:-webkit-autofill:active {
 }
 
 /* =====================================================================
+   PRISM SYNTAX HIGHLIGHTING (DARK MODE)
+   Theme tokens for Re:Code Code Editor
+   ===================================================================== */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #717171 !important;
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: #888888 !important;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: #27C93F !important;
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: #78DFFF !important;
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: #F1F1F1 !important;
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #FF5F56 !important;
+  font-weight: 600;
+}
+
+.token.function,
+.token.class-name {
+  color: #02C8F0 !important;
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #FFA116 !important;
+}
+
+.token.bold {
+  font-weight: bold;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
+/* =====================================================================
    PRINT & PDF EXPORT STYLESHEET
    Eliminates trailing blank pages, resets viewport heights, and avoids
    awkward page breaks across finding cards and metrics.

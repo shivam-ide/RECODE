@@ -41,6 +41,20 @@ const RULES = {
     title: 'Unused Variable Declaration',
     cwe: 'CWE-563',
   },
+  DEAD_CODE: {
+    ruleId: 'DEAD_CODE',
+    severity: 'MEDIUM',
+    category: 'QUALITY',
+    title: 'Unreachable / Dead Code Detected (CWE-561)',
+    cwe: 'CWE-561',
+  },
+  UNHANDLED_ASYNC_PROMISE: {
+    ruleId: 'UNHANDLED_ASYNC_PROMISE',
+    severity: 'MEDIUM',
+    category: 'QUALITY',
+    title: 'Unhandled Asynchronous Promise (CWE-391)',
+    cwe: 'CWE-391',
+  },
   CONSOLE_LOG_STMT: {
     ruleId: 'CONSOLE_LOG_STMT',
     severity: 'LOW',
@@ -61,6 +75,34 @@ const RULES = {
     category: 'SECURITY',
     title: 'Reverse Tabnabbing via target="_blank" (CWE-1022)',
     cwe: 'CWE-1022',
+  },
+  SQL_LEADING_WILDCARD: {
+    ruleId: 'SQL_LEADING_WILDCARD',
+    severity: 'LOW',
+    category: 'OPTIMIZATION',
+    title: 'Full Table Scan via Leading Wildcard in LIKE Clause',
+    cwe: null,
+  },
+  UNCONSTRAINED_MUTATION: {
+    ruleId: 'UNCONSTRAINED_MUTATION',
+    severity: 'HIGH',
+    category: 'SECURITY',
+    title: 'Unrestricted Mutation Statement (Missing WHERE Clause)',
+    cwe: 'CWE-89',
+  },
+  UNRESTRICTED_MUTATION: {
+    ruleId: 'UNRESTRICTED_MUTATION',
+    severity: 'HIGH',
+    category: 'SECURITY',
+    title: 'Unrestricted Mutation Statement (Missing WHERE Clause)',
+    cwe: 'CWE-89',
+  },
+  IMPLICIT_CARTESIAN_JOIN: {
+    ruleId: 'IMPLICIT_CARTESIAN_JOIN',
+    severity: 'HIGH',
+    category: 'OPTIMIZATION',
+    title: 'Unintended Cartesian Product via Implicit Comma Join',
+    cwe: null,
   },
 };
 
@@ -175,6 +217,21 @@ function getRuleStepByStepRemediation(ruleId) {
   if (rule.includes('CATCH')) {
     return 'Step 1: Log the caught error with `logger.error(err.message)`.\nStep 2: Either handle the failure gracefully or re-throw the exception.';
   }
+  if (rule.includes('DEAD') || rule.includes('UNREACHABLE')) {
+    return 'Step 1: Inspect statements located directly after return, throw, break, or continue.\nStep 2: Remove the unreachable dead code or move it before the terminating statement.';
+  }
+  if (rule.includes('PROMISE') || rule.includes('ASYNC')) {
+    return 'Step 1: Attach a .catch(err => ...) handler to the Promise chain.\nStep 2: Alternatively, refactor to async/await enclosed within a try/catch block.';
+  }
+  if (rule.includes('MUTATION') || rule.includes('UNRESTRICTED') || rule.includes('UNCONSTRAINED')) {
+    return 'Step 1: Always include a selective WHERE clause on UPDATE and DELETE operations (e.g., WHERE id = :target_id).\nStep 2: Ensure transaction safeguards or soft-deletion patterns are used to prevent accidental full-table data loss.';
+  }
+  if (rule.includes('CARTESIAN') || rule.includes('JOIN')) {
+    return 'Step 1: Replace legacy comma-separated table joins with explicit ANSI INNER JOIN syntax.\nStep 2: Define explicit ON predicates matching foreign keys (e.g., orders.customer_id = customers.id) to prevent unbounded Cartesian products.';
+  }
+  if (rule.includes('XSS') || rule.includes('INNERHTML')) {
+    return 'Step 1: Replace raw HTML sinks like innerHTML or outerHTML with safe property element.textContent.\nStep 2: If dynamic HTML formatting is required, sanitize inputs using DOMPurify.';
+  }
   return 'Step 1: Review the affected code logic against secure development best practices.\nStep 2: Apply the recommended remediation diff patch below.';
 }
 
@@ -189,14 +246,54 @@ function getRuleStepByStepRemediation(ruleId) {
 function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javascript') {
   const line = (evidence || '').trim();
   const rule = (ruleId || '').toUpperCase();
+  const isSql = language === 'sql';
 
-  // 1. UNUSED_VARIABLE
-  if (rule.includes('UNUSED')) {
-    return '// Removed unused variable';
+  // 1. UNRESTRICTED_MUTATION / UNCONSTRAINED_MUTATION (Missing WHERE clause)
+  if (rule.includes('MUTATION') || rule.includes('UNRESTRICTED') || rule.includes('UNCONSTRAINED')) {
+    const clean = line.replace(/;?\s*$/, '');
+    if (/^UPDATE\b/i.test(clean)) {
+      if (/\bSET\b/i.test(clean)) {
+        return `${clean} WHERE id = :target_id;`;
+      }
+      return `${clean} SET ... WHERE id = :target_id;`;
+    }
+    if (/^DELETE\s+FROM\b/i.test(clean)) {
+      return `${clean} WHERE id = :target_id;`;
+    }
+    if (/^DELETE\b/i.test(clean)) {
+      const tablePart = clean.replace(/^DELETE\s+/i, '');
+      return `DELETE FROM ${tablePart} WHERE id = :target_id;`;
+    }
+    return `${clean} WHERE id = :target_id;`;
   }
 
-  // 2. HARDCODED_SECRET (CWE-798)
+  // 2. IMPLICIT_CARTESIAN_JOIN / CARTESIAN_PRODUCT
+  if (rule.includes('CARTESIAN') || (isSql && rule.includes('JOIN'))) {
+    if (/\bFROM\b/i.test(line)) {
+      if (/^FROM\b/i.test(line)) {
+        return `-- Replace implicit comma join with explicit ANSI INNER JOIN and ON conditions\nFROM orders o INNER JOIN customers c ON o.customer_id = c.id INNER JOIN products p ON o.product_id = p.id;`;
+      }
+      return `-- Replace implicit comma join with explicit ANSI INNER JOIN and ON conditions\nSELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id INNER JOIN products p ON o.product_id = p.id;`;
+    }
+    return `-- Use explicit ANSI JOIN ... ON ... instead of Cartesian product\n${line}`;
+  }
+
+  // 3. SQL_LEADING_WILDCARD
+  if (rule.includes('WILDCARD') || rule.includes('LEADING')) {
+    const fixedLike = line.replace(/LIKE\s+['"]%([^'%"]+)['"]/i, "LIKE '$1%'");
+    return `-- Use trailing wildcard or full-text index to prevent full table scans\n${fixedLike}`;
+  }
+
+  // 4. UNUSED_VARIABLE
+  if (rule.includes('UNUSED')) {
+    return isSql ? '-- Removed unused column or alias' : '// Removed unused variable';
+  }
+
+  // 5. HARDCODED_SECRET (CWE-798)
   if (rule.includes('SECRET') || rule.includes('CREDENTIAL') || rule.includes('KEY')) {
+    if (isSql) {
+      return '-- Store credentials securely in vault or environment variables\n-- e.g. using vault secret provider or pg_crypto';
+    }
     const varMatch = line.match(/(?:const|let|var|String|final\s+String)?\s*([a-zA-Z0-9_$]+)\s*[:=]/);
     const varName = varMatch ? varMatch[1] : 'JWT_SECRET';
     const envVar = varName.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
@@ -213,13 +310,31 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
     return `const ${varName} = process.env.${envVar} || (() => { throw new Error("${envVar} missing in .env"); })();`;
   }
 
-  // 3. CONSOLE_LOG_STMT / CONSOLE_LOG_STATEMENT
-  if (rule.includes('CONSOLE') || rule.includes('LOG')) {
-    return '// logger.info(...) or remove before production';
+  // 6. CONSOLE_LOG_STMT / CONSOLE_LOG_STATEMENT
+  if (rule.includes('CONSOLE') || rule.includes('LOG') || rule.includes('PRINT')) {
+    return isSql ? '-- Removed debug print statement' : '// logger.info(...) or remove before production';
   }
 
-  // 4. SQL_INJECTION (CWE-89)
+  // 7. SQL_INJECTION (CWE-89)
   if (rule.includes('SQL')) {
+    if (isSql) {
+      if (line.includes('||')) {
+        return `-- Use parameterized EXECUTE ... USING\nEXECUTE 'SELECT * FROM students WHERE campus_id = $1 AND gpa >= $2' USING p_campus_id, p_min_gpa;`;
+      }
+      if (line.includes('+') || line.includes('@') || line.includes(':')) {
+        let parameterized = line
+          .replace(/['"][^'"]*['"]\s*\+\s*(@[a-zA-Z0-9_]+)/g, ':target_param')
+          .replace(/(@[a-zA-Z0-9_]+)\s*\+\s*['"][^'"]*['"]/g, ':target_param')
+          .replace(/['"][^'"]*['"]\s*\+\s*(:[a-zA-Z0-9_]+)/g, ':target_param')
+          .replace(/(:[a-zA-Z0-9_]+)\s*\+\s*['"][^'"]*['"]/g, ':target_param');
+        if (parameterized === line) {
+          parameterized = `${line.replace(/;?\s*$/, '')} -- Use parameterized input (:target_param);`;
+        }
+        return `-- Parameterize query inputs instead of dynamic string concatenation\n${parameterized}`;
+      }
+      return `-- Parameterized statement\n-- EXECUTE format('SELECT * FROM %I WHERE id = %L', table_name, user_id);`;
+    }
+
     const varNames = [];
     const templateMatches = [...line.matchAll(/\$\{([a-zA-Z0-9_$.]+)\}/g)];
     for (const m of templateMatches) {
@@ -245,11 +360,12 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
       let replaced = line;
       let paramCount = 0;
       for (const v of varNames) {
-        replaced = replaced.replace(new RegExp(`['"]?\\{${v}\\}['"]?`, 'g'), '%s');
+        const safeV = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        replaced = replaced.replace(new RegExp(`['"]?\\{${safeV}\\}['"]?`, 'g'), () => '%s');
         paramCount++;
       }
       if (paramCount === 0) {
-        replaced = replaced.replace(/\+\s*[a-zA-Z0-9_$.]+/g, '%s');
+        replaced = replaced.replace(/\+\s*[a-zA-Z0-9_$.]+/g, () => '%s');
       }
       const tupleVars = varNames.length === 1 ? `(${varNames[0]},)` : `(${varNames.join(', ')})`;
       return `${replaced}\n# cursor.execute(query, ${tupleVars})`;
@@ -258,9 +374,10 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
     if (language === 'java' || language === 'cpp') {
       let replaced = line;
       for (const v of varNames) {
-        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}\\s*\\+\\s*['"]`, 'g'), '?');
-        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}`, 'g'), '?"');
-        replaced = replaced.replace(new RegExp(`\\+\\s*std::to_string\\(${v}\\)`, 'g'), '?"');
+        const safeV = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${safeV}\\s*\\+\\s*['"]`, 'g'), () => '?');
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${safeV}`, 'g'), () => '?"');
+        replaced = replaced.replace(new RegExp(`\\+\\s*std::to_string\\(${safeV}\\)`, 'g'), () => '?"');
       }
       const paramsList = varNames.length > 0 ? varNames.join(', ') : 'param1, param2';
       return `${replaced}\n// Parameterized prepared statement bindings: [${paramsList}]`;
@@ -274,16 +391,20 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
       replaced = line.replace(/`([^`]*)`/, (match, sqlContent) => {
         let inner = sqlContent;
         for (const v of varNames) {
-          inner = inner.replace(new RegExp(`'\\s*\\$\\{${v}\\}\\s*'`, 'g'), `$${paramIndex}`);
-          inner = inner.replace(new RegExp(`\\$\\{${v}\\}`, 'g'), `$${paramIndex}`);
+          const idx = paramIndex;
+          const safeV = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          inner = inner.replace(new RegExp(`'\\s*\\$\\{${safeV}\\}\\s*'`, 'g'), () => `$${idx}`);
+          inner = inner.replace(new RegExp(`\\$\\{${safeV}\\}`, 'g'), () => `$${idx}`);
           paramIndex++;
         }
         return `"${inner};"`;
       });
     } else if (line.includes('+')) {
       for (const v of varNames) {
-        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}\\s*\\+\\s*['"]`, 'g'), `$${paramIndex}`);
-        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${v}`, 'g'), `$${paramIndex}"`);
+        const idx = paramIndex;
+        const safeV = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${safeV}\\s*\\+\\s*['"]`, 'g'), () => `$${idx}`);
+        replaced = replaced.replace(new RegExp(`['"]\\s*\\+\\s*${safeV}`, 'g'), () => `$${idx}"`);
         paramIndex++;
       }
       replaced = replaced.replace(/["']\s*;\s*$/, ';"');
@@ -295,12 +416,14 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
     return `${replaced}\n// const rows = await db.query(query, [${paramsList}]);`;
   }
 
-  // 5. EMPTY_CATCH_BLOCK
+  // 8. EMPTY_CATCH_BLOCK
   if (rule.includes('CATCH')) {
-    return '} catch (error) {\n  logger.error("Operation failed:", error);\n  throw error;\n}';
+    return isSql
+      ? '-- Exception handling block'
+      : '} catch (error) {\n  logger.error("Operation failed:", error);\n  throw error;\n}';
   }
 
-  // 6. DOM_XSS (CWE-79) via innerHTML
+  // 9. DOM_XSS (CWE-79) via innerHTML
   if (rule.includes('DOM_XSS') || rule.includes('INNERHTML')) {
     if (line.includes('.innerHTML')) {
       return line.replace(/\.innerHTML\s*=/, '.textContent =');
@@ -308,7 +431,7 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
     return '// Use element.textContent instead of innerHTML to prevent DOM XSS';
   }
 
-  // 7. INSECURE_TARGET_BLANK
+  // 10. INSECURE_TARGET_BLANK
   if (rule.includes('TARGET_BLANK') || rule.includes('TABNABBING')) {
     if (/target\s*=\s*["']_blank["']/i.test(line)) {
       return line.replace(/(target\s*=\s*["']_blank["'])/i, '$1 rel="noopener noreferrer"');
@@ -316,9 +439,29 @@ function generateStaticRemediationDiff(ruleId, evidence = '', language = 'javasc
     return 'rel="noopener noreferrer"';
   }
 
-  // 8. PARSER_ERROR
+  // 11. DEAD_CODE
+  if (rule.includes('DEAD') || rule.includes('UNREACHABLE')) {
+    return isSql ? '-- Removed unreachable statement' : '// Removed unreachable dead code';
+  }
+
+  // 12. UNHANDLED_ASYNC_PROMISE
+  if (rule.includes('PROMISE') || rule.includes('ASYNC')) {
+    if (line.includes('.then(')) {
+      return line.replace(/(\.then\([^)]+\))/, '$1.catch(err => { logger.error("Async operation failed:", err); })');
+    }
+    return `${line}.catch(err => logger.error(err));`;
+  }
+
+  // 13. PARSER_ERROR
   if (rule.includes('PARSER') || rule.includes('SYNTAX')) {
+    if (isSql) {
+      return line ? `${line} -- Corrected SQL syntax token` : '-- Complete statement with valid SQL clause';
+    }
     return line ? `${line} // Corrected syntax token` : '// Close block or statement';
+  }
+
+  if (isSql) {
+    return line ? `${line.replace(/;?\s*$/, '')} -- Safe SQL query;` : '-- Refactored safe SQL query';
   }
 
   return '// Refactored safe code block';
@@ -339,6 +482,7 @@ function resolveLanguage(filePath = '', explicitLanguage = '') {
     if (raw === 'ts') return 'typescript';
     if (raw === 'py') return 'python';
     if (raw === 'c++' || raw === 'cplusplus') return 'cpp';
+    if (raw === 'sql') return 'sql';
     return raw;
   }
 
@@ -362,6 +506,8 @@ function resolveLanguage(filePath = '', explicitLanguage = '') {
     case '.h':
     case '.hpp':
       return 'cpp';
+    case '.sql':
+      return 'sql';
     case '.html':
     case '.htm':
       return 'html';
@@ -529,6 +675,9 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
         ? remediation
         : getRuleStepByStepRemediation(ruleId);
 
+    const ruleDef = RULES[ruleId] || {};
+    const cweId = ruleDef.cwe || ruleDef.cweId || null;
+
     rawFindings.push({
       file: filePath || '<anonymous>',
       line,
@@ -537,6 +686,8 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
       severity,
       category,
       ruleId,
+      cwe: cweId,
+      cweId,
       title,
       description,
       remediation: effectiveRemediation,
@@ -579,6 +730,8 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
           remediation: formatParserErrorRemediation(parseErr, errorLine, evidence),
         });
       }
+      // Stage 1 Guard: Halt further false vulnerability alerts on broken syntax
+      return rawFindings.sort((a, b) => a.line - b.line);
     }
   } catch (err) {
     const errorLine = (err.loc && err.loc.line) || 1;
@@ -596,62 +749,45 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
       remediation: formatParserErrorRemediation(err, errorLine, evidence),
     });
 
-    // Scan remaining code lines for critical security vulnerabilities (SQLi & Hardcoded Secrets)
-    // ensuring security defects are caught even when code has syntax failures
-    for (let i = 0; i < codeLines.length; i++) {
-      const lineNum = i + 1;
-      const line = codeLines[i];
-      const trimmed = line.trim();
-
-      if (
-        trimmed.startsWith('//') ||
-        trimmed.startsWith('/*') ||
-        trimmed.startsWith('*')
-      ) {
-        continue;
-      }
-
-      // 1. Hardcoded Secrets (CWE-798)
-      const secretMatch = trimmed.match(
-        /\b([a-zA-Z0-9_]*(?:token|secret|jwt|api_?key)[a-zA-Z0-9_]*)\s*[:=]\s*["']([^"']{9,})["']/i
-      );
-      if (secretMatch) {
-        const varName = secretMatch[1];
-        addFinding({
-          line: lineNum,
-          ruleId: RULES.HARDCODED_SECRET.ruleId,
-          severity: RULES.HARDCODED_SECRET.severity,
-          category: RULES.HARDCODED_SECRET.category,
-          title: RULES.HARDCODED_SECRET.title,
-          description: `Hardcoded credential assigned to '${varName}' (> 8 chars). Store sensitive credentials in environment variables.`,
-          remediation: `Remove hardcoded credential '${varName}'. Retrieve this secret securely from environment variables.`,
-        });
-      }
-
-      // 2. SQL Injection (CWE-89)
-      if (
-        (SQL_KEYWORD_REGEX.test(trimmed) && trimmed.includes('+')) ||
-        (/\b(execute|query|rawQuery|queryRaw)\s*\(/i.test(trimmed) && trimmed.includes('+'))
-      ) {
-        if (SQL_KEYWORD_REGEX.test(trimmed)) {
-          addFinding({
-            line: lineNum,
-            ruleId: RULES.SQL_INJECTION.ruleId,
-            severity: RULES.SQL_INJECTION.severity,
-            category: RULES.SQL_INJECTION.category,
-            title: RULES.SQL_INJECTION.title,
-            description: 'Direct string concatenation detected in SQL query statement (CWE-89).',
-            remediation: 'Use parameterized queries or prepared statements ($1, $2 or ?) to prevent SQL injection vulnerabilities.',
-          });
-        }
-      }
-    }
+    // Stage 1 Guard: Halt further false vulnerability alerts on fatal parser failure
+    return rawFindings.sort((a, b) => a.line - b.line);
   }
 
   if (ast) {
     try {
       traverse(ast, {
-        // A. SQL Injection inside query execution calls & BinaryExpressions
+        // Dead Code Detection (CWE-561) in BlockStatement
+        BlockStatement(path) {
+          const body = path.node.body;
+          if (!Array.isArray(body)) return;
+          for (let i = 0; i < body.length - 1; i++) {
+            const stmt = body[i];
+            if (
+              stmt.type === 'ReturnStatement' ||
+              stmt.type === 'ThrowStatement' ||
+              stmt.type === 'BreakStatement' ||
+              stmt.type === 'ContinueStatement'
+            ) {
+              const deadStmt = body[i + 1];
+              if (deadStmt && deadStmt.loc) {
+                addFinding({
+                  line: deadStmt.loc.start.line,
+                  ruleId: RULES.DEAD_CODE.ruleId,
+                  severity: RULES.DEAD_CODE.severity,
+                  category: RULES.DEAD_CODE.category,
+                  title: RULES.DEAD_CODE.title,
+                  description: `Unreachable code detected on line ${deadStmt.loc.start.line} following a '${stmt.type.replace('Statement', '').toLowerCase()}'. This statement will never execute (CWE-561).`,
+                  remediation: 'Remove the unreachable dead code or restructure control flow before the return/throw statement.',
+                  diff_before: (codeLines[deadStmt.loc.start.line - 1] || '').trim(),
+                  diff_after: '// Removed unreachable dead code',
+                });
+                break;
+              }
+            }
+          }
+        },
+
+        // A. SQL Injection, DOM XSS, Unhandled Promises, & Console Statements inside CallExpressions
         CallExpression(path) {
           if (isQueryCall(path.node.callee)) {
             for (const arg of path.node.arguments) {
@@ -702,6 +838,62 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
               description:
                 'Direct console.log statement found in production code path. Use a structured logger instead.',
             });
+          }
+
+          // DOM XSS: document.write(...)
+          if (
+            callee.type === 'MemberExpression' &&
+            callee.object &&
+            callee.object.type === 'Identifier' &&
+            callee.object.name === 'document' &&
+            callee.property &&
+            callee.property.type === 'Identifier' &&
+            (callee.property.name === 'write' || callee.property.name === 'writeln')
+          ) {
+            addFinding({
+              line: path.node.loc.start.line,
+              ruleId: RULES.DOM_XSS.ruleId,
+              severity: RULES.DOM_XSS.severity,
+              category: RULES.DOM_XSS.category,
+              title: 'DOM XSS via document.write() (CWE-79)',
+              description:
+                'Use of document.write() creates severe DOM-based Cross-Site Scripting (CWE-79) vulnerabilities. Use modern DOM manipulation methods like textContent or createElement.',
+              diff_before: (codeLines[path.node.loc.start.line - 1] || '').trim(),
+              diff_after: '// Use element.textContent or createElement',
+            });
+          }
+
+          // Unhandled Promise Rejection (.then() without .catch())
+          if (
+            callee.type === 'MemberExpression' &&
+            callee.property &&
+            callee.property.type === 'Identifier' &&
+            callee.property.name === 'then'
+          ) {
+            const parent = path.parent;
+            const isChainedCatch =
+              parent &&
+              parent.type === 'MemberExpression' &&
+              parent.property &&
+              (parent.property.name === 'catch' || parent.property.name === 'finally' || parent.property.name === 'then');
+            const isReturned = parent && (parent.type === 'ReturnStatement' || parent.type === 'ArrowFunctionExpression');
+            const isAwaited = parent && parent.type === 'AwaitExpression';
+
+            if (!isChainedCatch && !isReturned && !isAwaited) {
+              if (path.node.arguments.length < 2) {
+                addFinding({
+                  line: path.node.loc.start.line,
+                  ruleId: RULES.UNHANDLED_ASYNC_PROMISE.ruleId,
+                  severity: RULES.UNHANDLED_ASYNC_PROMISE.severity,
+                  category: RULES.UNHANDLED_ASYNC_PROMISE.category,
+                  title: RULES.UNHANDLED_ASYNC_PROMISE.title,
+                  description:
+                    'Promise chain with .then() missing .catch() rejection handler. Unhandled promise rejections can cause silent failures or process crashes (CWE-391).',
+                  remediation:
+                    'Attach a .catch(err => ...) handler to the Promise chain or use async/await with a try/catch block.',
+                });
+              }
+            }
           }
         },
 
@@ -781,11 +973,14 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
 
     // Hardcoded Secrets & DOM XSS in AssignmentExpressions
     AssignmentExpression(path) {
-      // DOM XSS: element.innerHTML = ...
+      // DOM XSS: element.innerHTML or element.outerHTML
       if (
         path.node.left.type === 'MemberExpression' &&
         path.node.left.property &&
-        (path.node.left.property.name === 'innerHTML' || path.node.left.property.value === 'innerHTML')
+        (path.node.left.property.name === 'innerHTML' ||
+          path.node.left.property.value === 'innerHTML' ||
+          path.node.left.property.name === 'outerHTML' ||
+          path.node.left.property.value === 'outerHTML')
       ) {
         addFinding({
           line: path.node.loc.start.line,
@@ -793,7 +988,7 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
           severity: RULES.DOM_XSS.severity,
           category: RULES.DOM_XSS.category,
           title: RULES.DOM_XSS.title,
-          description: 'Direct assignment to element.innerHTML creates a DOM-based Cross-Site Scripting (CWE-79) vulnerability. Use element.textContent or sanitize dynamic values.',
+          description: `Direct assignment to element.${path.node.left.property.name || 'innerHTML'} creates a DOM-based Cross-Site Scripting (CWE-79) vulnerability. Use element.textContent or sanitize dynamic values.`,
         });
       }
 
@@ -877,6 +1072,51 @@ function analyzeJavaScriptAst(filePath, codeContent, language) {
           title: RULES.EMPTY_CATCH_BLOCK.title,
           description: 'Empty catch block detected. Unhandled exceptions should be logged, handled, or rethrown.',
         });
+      }
+    },
+
+    // E. JSX XSS: dangerouslySetInnerHTML
+    JSXAttribute(path) {
+      if (path.node.name && path.node.name.name === 'dangerouslySetInnerHTML') {
+        addFinding({
+          line: path.node.loc.start.line,
+          ruleId: RULES.DOM_XSS.ruleId,
+          severity: RULES.DOM_XSS.severity,
+          category: RULES.DOM_XSS.category,
+          title: 'DOM XSS via dangerouslySetInnerHTML (CWE-79)',
+          description:
+            'Direct use of dangerouslySetInnerHTML bypasses React XSS protections. Ensure dynamic HTML is sanitized with DOMPurify before insertion.',
+          remediation:
+            'Sanitize dynamic HTML content using DOMPurify.sanitize(...) before passing to dangerouslySetInnerHTML.',
+        });
+      }
+    },
+
+    // F. High-Entropy Cloud Credentials & Private Keys
+    StringLiteral(path) {
+      const val = path.node.value;
+      if (typeof val === 'string' && val.length >= 16) {
+        if (/\b(AKIA[0-9A-Z]{16})\b/.test(val)) {
+          addFinding({
+            line: path.node.loc.start.line,
+            ruleId: RULES.HARDCODED_SECRET.ruleId,
+            severity: RULES.HARDCODED_SECRET.severity,
+            category: RULES.HARDCODED_SECRET.category,
+            title: 'Hardcoded AWS Access Key ID (CWE-798)',
+            description:
+              'Hardcoded AWS Access Key ID detected. Store cloud credentials in secure environment variables or IAM roles.',
+          });
+        } else if (/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/.test(val)) {
+          addFinding({
+            line: path.node.loc.start.line,
+            ruleId: RULES.HARDCODED_SECRET.ruleId,
+            severity: RULES.HARDCODED_SECRET.severity,
+            category: RULES.HARDCODED_SECRET.category,
+            title: 'Hardcoded Private Cryptographic Key (CWE-798)',
+            description:
+              'Private cryptographic key embedded directly in source code. Load private keys securely from environment variables or a key vault.',
+          });
+        }
       }
     },
   });
@@ -966,7 +1206,8 @@ function analyzeNonJsSource(filePath, codeContent, language) {
       trimmed.startsWith('//') ||
       trimmed.startsWith('#') ||
       trimmed.startsWith('/*') ||
-      trimmed.startsWith('*')
+      trimmed.startsWith('*') ||
+      trimmed.startsWith('--')
     ) {
       continue;
     }
@@ -990,6 +1231,18 @@ function analyzeNonJsSource(filePath, codeContent, language) {
             });
           }
         } else if (char === '(') {
+          openParens++;
+          if (firstUnclosedParenLine === 0) firstUnclosedParenLine = lineNum;
+        } else if (char === ')') {
+          closeParens++;
+        }
+      }
+    }
+
+    // Syntax check for SQL: Count parentheses
+    if (language === 'sql') {
+      for (const char of line) {
+        if (char === '(') {
           openParens++;
           if (firstUnclosedParenLine === 0) firstUnclosedParenLine = lineNum;
         } else if (char === ')') {
@@ -1048,8 +1301,25 @@ function analyzeNonJsSource(filePath, codeContent, language) {
       });
     }
 
-    // 2. SQL Injection: execute/query calls with string concatenation
-    if (
+    // 2. SQL Injection: execute/query calls with string concatenation or dynamic parameter concatenation
+    if (language === 'sql') {
+      const hasDynamicConcat =
+        ((/\bEXECUTE\b/i.test(trimmed) || /\bEXEC\b/i.test(trimmed)) && (trimmed.includes('||') || trimmed.includes('+'))) ||
+        /(?:['"][^'"]*['"]\s*(?:\+|\|\|)\s*@[a-zA-Z0-9_]+|@[a-zA-Z0-9_]+\s*(?:\+|\|\|)\s*['"][^'"]*['"])/i.test(trimmed) ||
+        /(?:['"][^'"]*['"]\s*(?:\+|\|\|)\s*:[a-zA-Z0-9_]+|:[a-zA-Z0-9_]+\s*(?:\+|\|\|)\s*['"][^'"]*['"])/i.test(trimmed) ||
+        (/\b(WHERE|SELECT|SET|HAVING|VALUES)\b/i.test(trimmed) && /['"][^'"]*['"]\s*(?:\+|\|\|)\s*[@:a-zA-Z0-9_]+/i.test(trimmed));
+
+      if (hasDynamicConcat) {
+        addFinding({
+          line: lineNum,
+          ruleId: RULES.SQL_INJECTION.ruleId,
+          severity: 'HIGH',
+          category: 'SECURITY',
+          title: 'Dynamic SQL String Concatenation Vulnerability (CWE-89)',
+          description: 'Dynamic string concatenation detected in SQL query (e.g., concatenating with @dynamicInput). Concatenating parameters into SQL statements introduces severe SQL injection vulnerabilities (CWE-89). Suggest using parameterized inputs instead.',
+        });
+      }
+    } else if (
       /\b(execute|query|rawQuery|executeQuery|executeUpdate)\s*\(/i.test(trimmed) &&
       SQL_KEYWORD_REGEX.test(trimmed) &&
       trimmed.includes('+')
@@ -1062,6 +1332,83 @@ function analyzeNonJsSource(filePath, codeContent, language) {
         title: RULES.SQL_INJECTION.title,
         description: 'Direct string concatenation detected inside SQL query execution call.',
       });
+    }
+
+    // 2b. SQL Performance & Mutation Hazards (SQL-specific)
+    if (language === 'sql') {
+      // Unindexed leading wildcard check
+      if (/\bLIKE\s+['"]%[^'"]+['"]/i.test(trimmed)) {
+        addFinding({
+          line: lineNum,
+          ruleId: 'SQL_LEADING_WILDCARD',
+          severity: 'LOW',
+          category: 'OPTIMIZATION',
+          title: 'Full Table Scan via Leading Wildcard in LIKE Clause',
+          description: 'LIKE search pattern starts with a wildcard (e.g., "%Smith%"). Standard B-Tree indexes cannot index leading wildcards, resulting in expensive full table scans. Consider trigram indexing (pg_trgm) or full-text search.',
+        });
+      }
+
+      // Unrestricted DELETE / UPDATE (missing WHERE clause)
+      if (/^(UPDATE|DELETE\s+FROM|DELETE)\b/i.test(trimmed)) {
+        let statement = trimmed;
+        let hasWhere = /\bWHERE\b/i.test(trimmed);
+        let k = i + 1;
+        while (!hasWhere && !statement.includes(';') && k < codeLines.length) {
+          const nextLine = codeLines[k].trim();
+          if (/^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/i.test(nextLine)) break;
+          statement += ' ' + nextLine;
+          if (/\bWHERE\b/i.test(nextLine)) {
+            hasWhere = true;
+            break;
+          }
+          if (nextLine.includes(';')) break;
+          k++;
+        }
+        if (!hasWhere) {
+          addFinding({
+            line: lineNum,
+            ruleId: 'UNRESTRICTED_MUTATION',
+            severity: 'HIGH',
+            category: 'SECURITY',
+            title: 'Unrestricted Mutation Statement (Missing WHERE Clause)',
+            description: 'UPDATE or DELETE statement executed without a WHERE clause will modify or delete every row in the target table. Always provide a selective WHERE clause (e.g. WHERE id = :target_id).',
+          });
+        }
+      }
+
+      // Implicit comma joins without join conditions (Cartesian product check)
+      const fromMatch = trimmed.match(/\bFROM\s+([^;]+?)(?:\s+\bWHERE\b|\s+\bGROUP\b|\s+\bORDER\b|\s+\bLIMIT\b|\s+\bHAVING\b|;|$)/i);
+      if (fromMatch) {
+        const fromClause = fromMatch[1].trim();
+        // Check if fromClause contains comma-separated tables (excluding functions/subqueries)
+        if (!fromClause.includes('(')) {
+          const tables = fromClause.split(',').map((s) => s.trim()).filter(Boolean);
+          if (tables.length > 1) {
+            // Check if entire statement or line has join equality conditions (e.g. o.customer_id = c.id)
+            let fullStmt = trimmed;
+            let m = i + 1;
+            while (!fullStmt.includes(';') && m < codeLines.length) {
+              const nextLine = codeLines[m].trim();
+              if (/^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/i.test(nextLine)) break;
+              fullStmt += ' ' + nextLine;
+              if (nextLine.includes(';')) break;
+              m++;
+            }
+            const joinMatches =
+              fullStmt.match(/[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\s*=\s*[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+/gi) || [];
+            if (joinMatches.length < tables.length - 1) {
+              addFinding({
+                line: lineNum,
+                ruleId: 'IMPLICIT_CARTESIAN_JOIN',
+                severity: 'HIGH',
+                category: 'OPTIMIZATION',
+                title: 'Unintended Cartesian Product via Implicit Comma Join',
+                description: 'Implicit comma join detected in FROM clause without join conditions (e.g., FROM orders o, customers c, products p). This produces an unintended Cartesian product (cross-multiplication of all rows), causing severe database memory exhaustion and exponential query degradation. Use explicit ANSI INNER JOIN ... ON syntax.',
+              });
+            }
+          }
+        }
+      }
     }
 
     // 3. Empty catch / except blocks
@@ -1141,6 +1488,17 @@ function analyzeNonJsSource(filePath, codeContent, language) {
     });
   }
 
+  if (language === 'sql' && openParens > closeParens) {
+    addFinding({
+      line: firstUnclosedParenLine || codeLines.length,
+      ruleId: RULES.PARSER_ERROR.ruleId,
+      severity: RULES.PARSER_ERROR.severity,
+      category: RULES.PARSER_ERROR.category,
+      title: RULES.PARSER_ERROR.title,
+      description: `Syntax error: Missing closing parenthesis ')' (${openParens - closeParens} unclosed parenthesis at unexpected EOF).`,
+    });
+  }
+
   return findings.sort((a, b) => a.line - b.line);
 }
 
@@ -1212,6 +1570,613 @@ function analyzeHtmlSource(filePath, codeContent) {
 }
 
 /**
+ * Stage 1 (Syntax & Parsing Guard):
+ * Validates syntax against the designated language before running deep scans.
+ * If syntax fails (e.g. pure SQL submitted under a JavaScript file or broken syntax),
+ * outputs precise syntax diagnostics (line number, column, token error) and halts further false vulnerability alerts.
+ *
+ * @param {string} filePath - Target filename or path
+ * @param {string} codeContent - Raw source code
+ * @param {string} [language] - Declared language
+ * @returns {{ isValid: boolean, syntaxFindings: Array<Object> }}
+ */
+function _validateSyntaxGuardCore(filePath = '', codeContent = '', language = '') {
+  if (typeof codeContent !== 'string' || codeContent.trim().length === 0) {
+    return { isValid: true, syntaxFindings: [] };
+  }
+
+  const resolvedLang = resolveLanguage(filePath, language);
+  const codeLines = codeContent.split(/\r\n|\r|\n/);
+
+  // 1. JavaScript & TypeScript Syntax & Language Guard via @babel/parser
+  if (resolvedLang === 'javascript' || resolvedLang === 'typescript') {
+    const isTypeScript = resolvedLang === 'typescript' || filePath.endsWith('.ts') || filePath.endsWith('.tsx');
+    const plugins = [
+      'jsx',
+      'asyncDoExpressions',
+      'classProperties',
+      'classPrivateProperties',
+      'classPrivateMethods',
+      'decorators-legacy',
+      'doExpressions',
+      'dynamicImport',
+      'exportDefaultFrom',
+      'exportNamespaceFrom',
+      'functionBind',
+      'functionSent',
+      'importMeta',
+      'nullishCoalescingOperator',
+      'numericSeparator',
+      'objectRestSpread',
+      'optionalCatchBinding',
+      'optionalChaining',
+      'topLevelAwait',
+    ];
+    if (isTypeScript) plugins.push('typescript');
+
+    try {
+      const ast = parser.parse(codeContent, {
+        sourceType: 'unambiguous',
+        allowImportExportEverywhere: true,
+        allowReturnOutsideFunction: true,
+        allowAwaitOutsideFunction: true,
+        allowSuperOutsideMethod: true,
+        allowUndeclaredExports: true,
+        errorRecovery: true,
+        plugins,
+      });
+
+      if (ast && Array.isArray(ast.errors) && ast.errors.length > 0) {
+        const parseErr = ast.errors[0];
+        const errorLine = (parseErr.loc && parseErr.loc.line) || 1;
+        const errorCol = (parseErr.loc && parseErr.loc.column) || 0;
+        const rawEvidence = (codeLines[errorLine - 1] || '').trim();
+        const evidence = truncateSnippetLine(rawEvidence);
+
+        let desc = parseErr.message;
+        let remediation = formatParserErrorRemediation(parseErr, errorLine, rawEvidence);
+
+        if (
+          SQL_KEYWORD_REGEX.test(rawEvidence) ||
+          /^(SELECT|CREATE|INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(codeLines[0].trim())
+        ) {
+          desc = `${parseErr.message} (Language mismatch: Raw SQL statements submitted under JavaScript/TypeScript file).`;
+          remediation = `Language Mismatch: The submitted code appears to be SQL rather than ${resolvedLang}. Please select 'SQL (.sql)' in the language selector before scanning.`;
+        } else if (/^\s*(def|class|import|from|elif)\b/.test(rawEvidence)) {
+          desc = `${parseErr.message} (Language mismatch: Python statements submitted under JavaScript/TypeScript file).`;
+          remediation = `Language Mismatch: The submitted code appears to be Python rather than ${resolvedLang}. Please select 'Python (.py)' in the language selector before scanning.`;
+        }
+
+        return {
+          isValid: false,
+          syntaxFindings: [{
+            file: filePath || '<anonymous>',
+            line: errorLine,
+            column: errorCol,
+            lineNumber: errorLine,
+            severity: RULES.PARSER_ERROR.severity,
+            category: RULES.PARSER_ERROR.category,
+            ruleId: RULES.PARSER_ERROR.ruleId,
+            title: RULES.PARSER_ERROR.title,
+            description: desc,
+            remediation,
+            how: remediation,
+            how_to_fix: remediation,
+            evidence,
+            diff_before: evidence,
+            diff_after: evidence ? `${evidence} // Correct syntax token` : '// Close block or statement',
+            source: 'STATIC',
+            engine_source: 'STATIC',
+            engine: 'Static AST',
+          }],
+        };
+      }
+    } catch (err) {
+      const errorLine = (err.loc && err.loc.line) || 1;
+      const errorCol = (err.loc && err.loc.column) || 0;
+      const rawEvidence = (codeLines[errorLine - 1] || '').trim();
+      const evidence = truncateSnippetLine(rawEvidence);
+
+      let desc = err.message;
+      let remediation = formatParserErrorRemediation(err, errorLine, rawEvidence);
+
+      if (
+        SQL_KEYWORD_REGEX.test(rawEvidence) ||
+        /^(SELECT|CREATE|INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(codeLines[0].trim())
+      ) {
+        desc = `${err.message} (Language mismatch: Raw SQL statements submitted under JavaScript/TypeScript file).`;
+        remediation = `Language Mismatch: The submitted code appears to be SQL rather than ${resolvedLang}. Please select 'SQL (.sql)' in the language selector before scanning.`;
+      } else if (/^\s*(def|class|import|from|elif)\b/.test(rawEvidence)) {
+        desc = `${err.message} (Language mismatch: Python statements submitted under JavaScript/TypeScript file).`;
+        remediation = `Language Mismatch: The submitted code appears to be Python rather than ${resolvedLang}. Please select 'Python (.py)' in the language selector before scanning.`;
+      }
+
+      return {
+        isValid: false,
+        syntaxFindings: [{
+          file: filePath || '<anonymous>',
+          line: errorLine,
+          column: errorCol,
+          lineNumber: errorLine,
+          severity: RULES.PARSER_ERROR.severity,
+          category: RULES.PARSER_ERROR.category,
+          ruleId: RULES.PARSER_ERROR.ruleId,
+          title: RULES.PARSER_ERROR.title,
+          description: desc,
+          remediation,
+          how: remediation,
+          how_to_fix: remediation,
+          evidence,
+          diff_before: evidence,
+          diff_after: evidence ? `${evidence} // Correct syntax token` : '// Close block or statement',
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        }],
+      };
+    }
+
+    return { isValid: true, syntaxFindings: [] };
+  }
+
+  // 2. Python Syntax & Language Guard
+  if (resolvedLang === 'python') {
+    for (let i = 0; i < Math.min(10, codeLines.length); i++) {
+      const trimmed = codeLines[i].trim();
+      if (/^(function\s+[a-zA-Z0-9_$]+|const\s+[a-zA-Z0-9_$]+|let\s+[a-zA-Z0-9_$]+|var\s+[a-zA-Z0-9_$]+|console\.log)\b/.test(trimmed)) {
+        return {
+          isValid: false,
+          syntaxFindings: [{
+            file: filePath || '<anonymous>',
+            line: i + 1,
+            column: 1,
+            lineNumber: i + 1,
+            severity: RULES.PARSER_ERROR.severity,
+            category: RULES.PARSER_ERROR.category,
+            ruleId: RULES.PARSER_ERROR.ruleId,
+            title: RULES.PARSER_ERROR.title,
+            description: `Syntax error: Unexpected token '${trimmed.split(' ')[0]}' on line ${i + 1}. JavaScript code detected in a Python file.`,
+            remediation: "Language Mismatch: The submitted code appears to be JavaScript rather than Python. Please select 'JavaScript' in the language selector.",
+            how: "Language Mismatch: The submitted code appears to be JavaScript rather than Python. Please select 'JavaScript' in the language selector.",
+            how_to_fix: "Language Mismatch: The submitted code appears to be JavaScript rather than Python. Please select 'JavaScript' in the language selector.",
+            evidence: trimmed,
+            diff_before: trimmed,
+            diff_after: '# Select JavaScript in language dropdown',
+            source: 'STATIC',
+            engine_source: 'STATIC',
+            engine: 'Static AST',
+          }],
+        };
+      }
+      if (/^(SELECT|CREATE TABLE|INSERT INTO|UPDATE|DELETE FROM)\b/i.test(trimmed)) {
+        return {
+          isValid: false,
+          syntaxFindings: [{
+            file: filePath || '<anonymous>',
+            line: i + 1,
+            column: 1,
+            lineNumber: i + 1,
+            severity: RULES.PARSER_ERROR.severity,
+            category: RULES.PARSER_ERROR.category,
+            ruleId: RULES.PARSER_ERROR.ruleId,
+            title: RULES.PARSER_ERROR.title,
+            description: `Syntax error: Unexpected token '${trimmed.split(' ')[0]}' on line ${i + 1}. SQL code detected in a Python file.`,
+            remediation: "Language Mismatch: The submitted code appears to be SQL rather than Python. Please select 'SQL (.sql)' in the language selector.",
+            how: "Language Mismatch: The submitted code appears to be SQL rather than Python. Please select 'SQL (.sql)' in the language selector.",
+            how_to_fix: "Language Mismatch: The submitted code appears to be SQL rather than Python. Please select 'SQL (.sql)' in the language selector.",
+            evidence: trimmed,
+            diff_before: trimmed,
+            diff_after: '# Select SQL in language dropdown',
+            source: 'STATIC',
+            engine_source: 'STATIC',
+            engine: 'Static AST',
+          }],
+        };
+      }
+    }
+
+    let inTripleQuote = false;
+    let tripleQuoteLine = 1;
+    let openParens = 0;
+    let firstUnclosedParen = 0;
+
+    for (let i = 0; i < codeLines.length; i++) {
+      const lineNum = i + 1;
+      const line = codeLines[i];
+      const trimmed = line.trim();
+
+      const doubleTripleCount = (line.match(/"""/g) || []).length;
+      const singleTripleCount = (line.match(/'''/g) || []).length;
+      if ((doubleTripleCount % 2 !== 0) || (singleTripleCount % 2 !== 0)) {
+        if (!inTripleQuote) {
+          inTripleQuote = true;
+          tripleQuoteLine = lineNum;
+        } else {
+          inTripleQuote = false;
+        }
+      }
+
+      if (!inTripleQuote) {
+        for (let c = 0; c < line.length; c++) {
+          const char = line[c];
+          if (char === '(') {
+            openParens++;
+            if (firstUnclosedParen === 0) firstUnclosedParen = lineNum;
+          } else if (char === ')') {
+            openParens--;
+            if (openParens < 0) {
+              return {
+                isValid: false,
+                syntaxFindings: [{
+                  file: filePath || '<anonymous>',
+                  line: lineNum,
+                  column: c + 1,
+                  lineNumber: lineNum,
+                  severity: RULES.PARSER_ERROR.severity,
+                  category: RULES.PARSER_ERROR.category,
+                  ruleId: RULES.PARSER_ERROR.ruleId,
+                  title: RULES.PARSER_ERROR.title,
+                  description: "Syntax error: Unexpected closing parenthesis ')' without matching opening parenthesis.",
+                  remediation: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis. Remove the extra ')' or ensure opening '(' is present.`,
+                  how: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis.`,
+                  how_to_fix: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis.`,
+                  evidence: trimmed,
+                  diff_before: trimmed,
+                  diff_after: trimmed.replace(/\)/, ''),
+                  source: 'STATIC',
+                  engine_source: 'STATIC',
+                  engine: 'Static AST',
+                }],
+              };
+            }
+          }
+        }
+
+        if (/^(if|elif|else|for|while|def|class|try|except|finally|with)\b.*:\s*$/.test(trimmed)) {
+          let nextIdx = i + 1;
+          while (nextIdx < codeLines.length && codeLines[nextIdx].trim() === '') nextIdx++;
+          if (nextIdx >= codeLines.length) {
+            return {
+              isValid: false,
+              syntaxFindings: [{
+                file: filePath || '<anonymous>',
+                line: lineNum,
+                column: 1,
+                lineNumber: lineNum,
+                severity: RULES.PARSER_ERROR.severity,
+                category: RULES.PARSER_ERROR.category,
+                ruleId: RULES.PARSER_ERROR.ruleId,
+                title: RULES.PARSER_ERROR.title,
+                description: `Syntax error: Incomplete '${trimmed.split(' ')[0]}' statement at end of file (unexpected EOF).`,
+                remediation: `Syntax Error: Line ${lineNum} requires an indented body. Add implementation code or 'pass'.`,
+                how: `Syntax Error: Line ${lineNum} requires an indented body.`,
+                how_to_fix: `Syntax Error: Line ${lineNum} requires an indented body.`,
+                evidence: trimmed,
+                diff_before: trimmed,
+                diff_after: `${trimmed}\n    pass`,
+                source: 'STATIC',
+                engine_source: 'STATIC',
+                engine: 'Static AST',
+              }],
+            };
+          } else {
+            const currentIndent = line.search(/\S|$/);
+            const nextIndent = codeLines[nextIdx].search(/\S|$/);
+            if (nextIndent <= currentIndent) {
+              return {
+                isValid: false,
+                syntaxFindings: [{
+                  file: filePath || '<anonymous>',
+                  line: lineNum,
+                  column: 1,
+                  lineNumber: lineNum,
+                  severity: RULES.PARSER_ERROR.severity,
+                  category: RULES.PARSER_ERROR.category,
+                  ruleId: RULES.PARSER_ERROR.ruleId,
+                  title: RULES.PARSER_ERROR.title,
+                  description: `Syntax error: Expected an indented block after '${trimmed}' statement.`,
+                  remediation: `Syntax Error: Indent the block following line ${lineNum} by 4 spaces.`,
+                  how: `Syntax Error: Indent the block following line ${lineNum}.`,
+                  how_to_fix: `Syntax Error: Indent the block following line ${lineNum}.`,
+                  evidence: trimmed,
+                  diff_before: trimmed,
+                  diff_after: `${trimmed}\n    # body`,
+                  source: 'STATIC',
+                  engine_source: 'STATIC',
+                  engine: 'Static AST',
+                }],
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (inTripleQuote) {
+      return {
+        isValid: false,
+        syntaxFindings: [{
+          file: filePath || '<anonymous>',
+          line: tripleQuoteLine,
+          column: 1,
+          lineNumber: tripleQuoteLine,
+          severity: RULES.PARSER_ERROR.severity,
+          category: RULES.PARSER_ERROR.category,
+          ruleId: RULES.PARSER_ERROR.ruleId,
+          title: RULES.PARSER_ERROR.title,
+          description: 'Syntax error: Unclosed multiline string literal (unexpected EOF).',
+          remediation: `Syntax Error: Line ${tripleQuoteLine} starts a multiline string that is never closed. Add matching triple quotes before EOF.`,
+          how: `Syntax Error: Close multiline string started at line ${tripleQuoteLine}.`,
+          how_to_fix: `Syntax Error: Close multiline string started at line ${tripleQuoteLine}.`,
+          evidence: (codeLines[tripleQuoteLine - 1] || '').trim(),
+          diff_before: (codeLines[tripleQuoteLine - 1] || '').trim(),
+          diff_after: '""" """',
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        }],
+      };
+    }
+
+    if (openParens > 0) {
+      return {
+        isValid: false,
+        syntaxFindings: [{
+          file: filePath || '<anonymous>',
+          line: firstUnclosedParen,
+          column: 1,
+          lineNumber: firstUnclosedParen,
+          severity: RULES.PARSER_ERROR.severity,
+          category: RULES.PARSER_ERROR.category,
+          ruleId: RULES.PARSER_ERROR.ruleId,
+          title: RULES.PARSER_ERROR.title,
+          description: `Syntax error: Missing closing parenthesis ')' (${openParens} unclosed parenthesis at unexpected EOF).`,
+          remediation: `Syntax Error: Line ${firstUnclosedParen} has an unclosed parenthesis. Add matching ')' to close expression.`,
+          how: `Syntax Error: Close parenthesis from line ${firstUnclosedParen}.`,
+          how_to_fix: `Syntax Error: Close parenthesis from line ${firstUnclosedParen}.`,
+          evidence: (codeLines[firstUnclosedParen - 1] || '').trim(),
+          diff_before: (codeLines[firstUnclosedParen - 1] || '').trim(),
+          diff_after: `${(codeLines[firstUnclosedParen - 1] || '').trim()})`,
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        }],
+      };
+    }
+
+    return { isValid: true, syntaxFindings: [] };
+  }
+
+  // 3. SQL Syntax & Language Guard
+  if (resolvedLang === 'sql') {
+    for (let i = 0; i < Math.min(10, codeLines.length); i++) {
+      const trimmed = codeLines[i].trim();
+      if (/^(function\s+[a-zA-Z0-9_$]+|const\s+[a-zA-Z0-9_$]+|let\s+[a-zA-Z0-9_$]+|var\s+[a-zA-Z0-9_$]+|console\.log)\b/.test(trimmed)) {
+        return {
+          isValid: false,
+          syntaxFindings: [{
+            file: filePath || '<anonymous>',
+            line: i + 1,
+            column: 1,
+            lineNumber: i + 1,
+            severity: RULES.PARSER_ERROR.severity,
+            category: RULES.PARSER_ERROR.category,
+            ruleId: RULES.PARSER_ERROR.ruleId,
+            title: RULES.PARSER_ERROR.title,
+            description: `Syntax error: Unexpected token '${trimmed.split(' ')[0]}' on line ${i + 1}. JavaScript code detected in a SQL file.`,
+            remediation: "Language Mismatch: The submitted code appears to be JavaScript rather than SQL. Please select 'JavaScript' in the language selector.",
+            how: "Language Mismatch: The submitted code appears to be JavaScript rather than SQL. Please select 'JavaScript' in the language selector.",
+            how_to_fix: "Language Mismatch: The submitted code appears to be JavaScript rather than SQL. Please select 'JavaScript' in the language selector.",
+            evidence: trimmed,
+            diff_before: trimmed,
+            diff_after: '-- Select JavaScript in language dropdown',
+            source: 'STATIC',
+            engine_source: 'STATIC',
+            engine: 'Static AST',
+          }],
+        };
+      }
+      if (/^(def\s+[a-zA-Z0-9_$]+|import\s+[a-zA-Z0-9_$]+|from\s+[a-zA-Z0-9_$]+\s+import)\b/.test(trimmed)) {
+        return {
+          isValid: false,
+          syntaxFindings: [{
+            file: filePath || '<anonymous>',
+            line: i + 1,
+            column: 1,
+            lineNumber: i + 1,
+            severity: RULES.PARSER_ERROR.severity,
+            category: RULES.PARSER_ERROR.category,
+            ruleId: RULES.PARSER_ERROR.ruleId,
+            title: RULES.PARSER_ERROR.title,
+            description: `Syntax error: Unexpected token '${trimmed.split(' ')[0]}' on line ${i + 1}. Python code detected in a SQL file.`,
+            remediation: "Language Mismatch: The submitted code appears to be Python rather than SQL. Please select 'Python (.py)' in the language selector.",
+            how: "Language Mismatch: The submitted code appears to be Python rather than SQL. Please select 'Python (.py)' in the language selector.",
+            how_to_fix: "Language Mismatch: The submitted code appears to be Python rather than SQL. Please select 'Python (.py)' in the language selector.",
+            evidence: trimmed,
+            diff_before: trimmed,
+            diff_after: '-- Select Python in language dropdown',
+            source: 'STATIC',
+            engine_source: 'STATIC',
+            engine: 'Static AST',
+          }],
+        };
+      }
+    }
+
+    let openParens = 0;
+    let firstUnclosedParen = 0;
+    for (let i = 0; i < codeLines.length; i++) {
+      const lineNum = i + 1;
+      const line = codeLines[i];
+      const trimmed = line.trim();
+      if (trimmed.startsWith('--') || trimmed.startsWith('/*')) continue;
+
+      for (let c = 0; c < line.length; c++) {
+        const char = line[c];
+        if (char === '(') {
+          openParens++;
+          if (firstUnclosedParen === 0) firstUnclosedParen = lineNum;
+        } else if (char === ')') {
+          openParens--;
+          if (openParens < 0) {
+            return {
+              isValid: false,
+              syntaxFindings: [{
+                file: filePath || '<anonymous>',
+                line: lineNum,
+                column: c + 1,
+                lineNumber: lineNum,
+                severity: RULES.PARSER_ERROR.severity,
+                category: RULES.PARSER_ERROR.category,
+                ruleId: RULES.PARSER_ERROR.ruleId,
+                title: RULES.PARSER_ERROR.title,
+                description: "Syntax error: Unexpected closing parenthesis ')' without matching opening parenthesis.",
+                remediation: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis. Remove the extra ')' or ensure opening '(' is present.`,
+                how: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis.`,
+                how_to_fix: `Syntax Error: Line ${lineNum} has an unmatched closing parenthesis.`,
+                evidence: trimmed,
+                diff_before: trimmed,
+                diff_after: trimmed.replace(/\)/, ''),
+                source: 'STATIC',
+                engine_source: 'STATIC',
+                engine: 'Static AST',
+              }],
+            };
+          }
+        }
+      }
+    }
+
+    if (openParens > 0) {
+      return {
+        isValid: false,
+        syntaxFindings: [{
+          file: filePath || '<anonymous>',
+          line: firstUnclosedParen,
+          column: 1,
+          lineNumber: firstUnclosedParen,
+          severity: RULES.PARSER_ERROR.severity,
+          category: RULES.PARSER_ERROR.category,
+          ruleId: RULES.PARSER_ERROR.ruleId,
+          title: RULES.PARSER_ERROR.title,
+          description: `Syntax error: Missing closing parenthesis ')' (${openParens} unclosed parenthesis at unexpected EOF).`,
+          remediation: `Syntax Error: Line ${firstUnclosedParen} has an unclosed parenthesis. Add matching ')' to close expression.`,
+          how: `Syntax Error: Close parenthesis from line ${firstUnclosedParen}.`,
+          how_to_fix: `Syntax Error: Close parenthesis from line ${firstUnclosedParen}.`,
+          evidence: (codeLines[firstUnclosedParen - 1] || '').trim(),
+          diff_before: (codeLines[firstUnclosedParen - 1] || '').trim(),
+          diff_after: `${(codeLines[firstUnclosedParen - 1] || '').trim()});`,
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        }],
+      };
+    }
+
+    return { isValid: true, syntaxFindings: [] };
+  }
+
+  // 4. Java & C++ Syntax & Language Guard
+  if (resolvedLang === 'java' || resolvedLang === 'cpp') {
+    let openBraces = 0;
+    let firstUnclosedBrace = 0;
+    let openParens = 0;
+
+    for (let i = 0; i < codeLines.length; i++) {
+      const lineNum = i + 1;
+      const line = codeLines[i];
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+
+      for (let c = 0; c < line.length; c++) {
+        const char = line[c];
+        if (char === '{') {
+          openBraces++;
+          if (firstUnclosedBrace === 0) firstUnclosedBrace = lineNum;
+        } else if (char === '}') {
+          openBraces--;
+          if (openBraces < 0) {
+            return {
+              isValid: false,
+              syntaxFindings: [{
+                file: filePath || '<anonymous>',
+                line: lineNum,
+                column: c + 1,
+                lineNumber: lineNum,
+                severity: RULES.PARSER_ERROR.severity,
+                category: RULES.PARSER_ERROR.category,
+                ruleId: RULES.PARSER_ERROR.ruleId,
+                title: RULES.PARSER_ERROR.title,
+                description: "Syntax error: Unexpected closing brace '}' without matching opening brace.",
+                remediation: `Syntax Error: Line ${lineNum} has an unmatched closing brace '}'. Remove the extra '}' or ensure opening '{' is present.`,
+                how: `Syntax Error: Line ${lineNum} has an unmatched closing brace.`,
+                how_to_fix: `Syntax Error: Line ${lineNum} has an unmatched closing brace.`,
+                evidence: trimmed,
+                diff_before: trimmed,
+                diff_after: trimmed.replace(/\}/, ''),
+                source: 'STATIC',
+                engine_source: 'STATIC',
+                engine: 'Static AST',
+              }],
+            };
+          }
+        } else if (char === '(') {
+          openParens++;
+        } else if (char === ')') {
+          openParens--;
+        }
+      }
+    }
+
+    if (openBraces > 0) {
+      return {
+        isValid: false,
+        syntaxFindings: [{
+          file: filePath || '<anonymous>',
+          line: firstUnclosedBrace || codeLines.length,
+          column: 1,
+          lineNumber: firstUnclosedBrace || codeLines.length,
+          severity: RULES.PARSER_ERROR.severity,
+          category: RULES.PARSER_ERROR.category,
+          ruleId: RULES.PARSER_ERROR.ruleId,
+          title: RULES.PARSER_ERROR.title,
+          description: `Syntax error: Missing closing brace '}' (${openBraces} unclosed block(s) at unexpected EOF).`,
+          remediation: `Syntax Error: Code block starting near line ${firstUnclosedBrace} was not closed. Add '}' before end of file.`,
+          how: `Syntax Error: Add closing brace '}' before EOF.`,
+          how_to_fix: `Syntax Error: Add closing brace '}' before EOF.`,
+          evidence: (codeLines[firstUnclosedBrace - 1] || '').trim(),
+          diff_before: (codeLines[firstUnclosedBrace - 1] || '').trim(),
+          diff_after: `${(codeLines[firstUnclosedBrace - 1] || '').trim()}\n}`,
+          source: 'STATIC',
+          engine_source: 'STATIC',
+          engine: 'Static AST',
+        }],
+      };
+    }
+
+    return { isValid: true, syntaxFindings: [] };
+  }
+
+  return { isValid: true, syntaxFindings: [] };
+}
+
+/**
+ * Validate syntax guard wrapper ensuring backwards-compatible properties
+ * (isValid, hasError, syntaxFindings, diagnostic)
+ */
+function validateSyntaxGuard(filePath = '', codeContent = '', language = '') {
+  const result = _validateSyntaxGuardCore(filePath, codeContent, language);
+  const syntaxFindings = result.syntaxFindings || [];
+  return {
+    ...result,
+    isValid: result.isValid,
+    hasError: !result.isValid,
+    syntaxFindings,
+    diagnostic: syntaxFindings.length > 0 ? syntaxFindings[0] : null,
+  };
+}
+
+/**
  * Main Static AST Code Analyzer
  *
  * @param {string} filePath - Path or filename of target source file
@@ -1228,6 +2193,14 @@ function analyzeFile(filePath, codeContent, language) {
     return [];
   }
 
+  // STAGE 1: Syntax & Parsing Guard
+  const syntaxCheck = validateSyntaxGuard(filePath, codeContent, language);
+  if (!syntaxCheck.isValid) {
+    // Stage 1 Guard: Halt further false vulnerability alerts on broken syntax
+    return syntaxCheck.syntaxFindings;
+  }
+
+  // STAGE 2: Static Deterministic Rules (AST & regex analysis)
   const resolvedLang = resolveLanguage(filePath, language);
 
   if (resolvedLang === 'javascript' || resolvedLang === 'typescript') {
@@ -1261,7 +2234,9 @@ function analyzeFiles(fileList) {
 module.exports = {
   RULES,
   resolveLanguage,
+  validateSyntaxGuard,
   analyzeFile,
   analyzeFiles,
+  analyzeJavaScriptAst,
   generateStaticRemediationDiff,
 };

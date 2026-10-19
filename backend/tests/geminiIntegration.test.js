@@ -158,6 +158,21 @@ describe('Module 8: Google Gemini AI Integration (geminiClient.js & aiReviewer.j
       expect(prompt).toContain('SQL_INJECTION');
       expect(prompt).toContain('CWE-89');
     });
+
+    it('should generate SQL-specific inspection priorities when language is sql', () => {
+      const sqlQuery = "SELECT * FROM users WHERE name LIKE '%" + "Smith" + "%';";
+      const prompt = buildReviewPrompt({
+        filePath: 'queries/search.sql',
+        codeContent: sqlQuery,
+        language: 'sql',
+      });
+
+      expect(prompt).toContain('SQL INSPECTION PRIORITIES:');
+      expect(prompt).toContain('SQL injection vulnerabilities and dynamic query concatenation risks');
+      expect(prompt).toContain('Query performance bottlenecks');
+      expect(prompt).toContain('full table scans, missing indexes, unindexed joins');
+      expect(prompt).toContain('Dialect-agnostic best practices, data integrity, and anti-patterns');
+    });
   });
 
   // ============================================================================

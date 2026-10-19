@@ -39,7 +39,7 @@ export default function BrandLogo({ className = 'h-7 w-auto', alt = 'Re:Code Log
       src={currentSrc}
       alt={alt}
       onError={handleError}
-      className={`object-contain transition-opacity duration-150 ${className}`}
+      className={`object-contain object-left transition-opacity duration-150 ${className}`}
     />
   );
 }

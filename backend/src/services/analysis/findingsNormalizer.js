@@ -128,6 +128,75 @@ function isMatchingRuleOrCategory(staticItem, aiItem) {
     return true;
   }
 
+  if (
+    staticRule === 'SQL_LEADING_WILDCARD' &&
+    (aiTitle.includes('WILDCARD') ||
+      aiTitle.includes('INDEX') ||
+      aiTitle.includes('TABLE SCAN') ||
+      aiExplanation.includes('LIKE') ||
+      aiExplanation.includes('INDEX') ||
+      aiExplanation.includes('SCAN'))
+  ) {
+    return true;
+  }
+
+  if (
+    (staticRule === 'UNRESTRICTED_MUTATION' || staticRule === 'UNCONSTRAINED_MUTATION') &&
+    (aiTitle.includes('WHERE') ||
+      aiTitle.includes('DELETE') ||
+      aiTitle.includes('UPDATE') ||
+      aiTitle.includes('MUTATION') ||
+      aiExplanation.includes('WHERE') ||
+      aiExplanation.includes('DELETE') ||
+      aiExplanation.includes('UPDATE'))
+  ) {
+    return true;
+  }
+
+  if (
+    (staticRule === 'IMPLICIT_CARTESIAN_JOIN' || staticRule === 'CARTESIAN_PRODUCT' || staticRule.includes('CARTESIAN')) &&
+    (aiTitle.includes('CARTESIAN') ||
+      aiTitle.includes('JOIN') ||
+      aiTitle.includes('COMMA') ||
+      aiTitle.includes('CROSS') ||
+      aiExplanation.includes('CARTESIAN') ||
+      aiExplanation.includes('COMMA JOIN') ||
+      aiExplanation.includes('JOIN'))
+  ) {
+    return true;
+  }
+
+  if (
+    staticRule === 'DEAD_CODE' &&
+    (aiTitle.includes('DEAD') ||
+      aiTitle.includes('UNREACHABLE') ||
+      aiExplanation.includes('DEAD') ||
+      aiExplanation.includes('UNREACHABLE'))
+  ) {
+    return true;
+  }
+
+  if (
+    staticRule === 'UNHANDLED_ASYNC_PROMISE' &&
+    (aiTitle.includes('PROMISE') ||
+      aiTitle.includes('ASYNC') ||
+      aiExplanation.includes('PROMISE') ||
+      aiExplanation.includes('ASYNC') ||
+      aiExplanation.includes('CATCH'))
+  ) {
+    return true;
+  }
+
+  if (
+    staticRule === 'DOM_XSS' &&
+    (aiTitle.includes('XSS') ||
+      aiTitle.includes('INNERHTML') ||
+      aiExplanation.includes('XSS') ||
+      aiExplanation.includes('CROSS-SITE SCRIPTING'))
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -222,6 +291,18 @@ function enrichFindingDetails(item) {
     what = what || 'An empty catch block is silently swallowing errors without logging or handling them.';
     why = why || 'Silencing exceptions hides runtime failures, leaves application state corrupted, and makes production issues impossible to trace (CWE-390).';
     how = how || 'Step 1: Log the caught error with `logger.error(err.message)`.\nStep 2: Either handle the failure gracefully or re-throw the exception.';
+  } else if (rule.includes('DEAD') || rule.includes('UNREACHABLE')) {
+    what = what || 'Unreachable code detected following a terminating statement (return, throw, break, or continue).';
+    why = why || 'Dead code will never execute, introduces developer confusion, and can indicate incomplete refactoring (CWE-561).';
+    how = how || 'Step 1: Inspect statements located directly after return, throw, break, or continue.\nStep 2: Either remove the dead statements or move them above the terminating statement.';
+  } else if (rule.includes('PROMISE') || rule.includes('ASYNC')) {
+    what = what || 'An asynchronous Promise chain is missing a .catch() rejection handler.';
+    why = why || 'Unhandled Promise rejections can cause silent failures, resource leaks, or process termination under Node.js (CWE-391).';
+    how = how || 'Step 1: Attach a .catch(err => ...) handler to the Promise chain.\nStep 2: Alternatively, refactor to async/await enclosed within a try/catch block.';
+  } else if (rule.includes('DOM_XSS') || rule.includes('INNERHTML')) {
+    what = what || 'Direct assignment of dynamic data to raw HTML sinks (innerHTML, outerHTML, or document.write).';
+    why = why || 'Attackers can inject malicious JavaScript to hijack user sessions, steal cookies, or execute unauthorized actions (CWE-79 DOM XSS).';
+    how = how || 'Step 1: Use safe property element.textContent instead of innerHTML.\nStep 2: If HTML markup is required, sanitize dynamic inputs with DOMPurify.';
   } else if (rule.includes('PARSER') || rule.includes('SYNTAX')) {
     what = what || `Syntax error on line ${line}: Unexpected or missing compiler token.`;
     why = why || 'The JavaScript/programming engine cannot parse the file, causing immediate runtime crashes on initialization.';
@@ -281,13 +362,59 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
 
   const defaultFile = fileMetadata.filePath || fileMetadata.file || 'snippet';
 
-  // 0. Pre-deduplicate incoming AI findings
+  // 0. Pre-deduplicate and cross-validate incoming AI findings against user source input
+  const contentStr = fileMetadata.content || fileMetadata.codeContent || null;
+  const contentLines = typeof contentStr === 'string' && contentStr.length > 0 ? contentStr.split(/\r\n|\r|\n/) : null;
+  const maxLine = contentLines ? contentLines.length : null;
+
   const seenAiKey = new Set();
   const safeAi = [];
   for (const aItem of rawAi) {
     if (!aItem || typeof aItem !== 'object') continue;
-    const aLine = typeof aItem.line === 'number' ? aItem.line : aItem.lineNumber || 1;
+    let aLine = typeof aItem.lineStart === 'number' ? aItem.lineStart : typeof aItem.line === 'number' ? aItem.line : aItem.lineNumber || 1;
     const aFile = aItem.file || defaultFile;
+
+    // Reject hallucinated AI snippets that do not match user input, or re-anchor if matched
+    const snippet = (aItem.vulnerableSnippet || aItem.diff_before || '').trim();
+    if (contentLines && snippet.length >= 4) {
+      const normSnippet = snippet.replace(/\s+/g, ' ');
+      let found = false;
+      let matchedL = -1;
+      const start = Math.max(1, aLine - 2);
+      const end = maxLine !== null ? Math.min(maxLine, Math.max(1, aLine + 2)) : aLine + 2;
+      for (let l = start; l <= end; l++) {
+        const text = (contentLines[l - 1] || '').trim().replace(/\s+/g, ' ');
+        if (text && (text.includes(normSnippet) || normSnippet.includes(text))) {
+          found = true;
+          matchedL = l;
+          break;
+        }
+      }
+      if (!found) {
+        for (let l = 1; l <= (maxLine || contentLines.length); l++) {
+          const text = (contentLines[l - 1] || '').trim().replace(/\s+/g, ' ');
+          if (text && (text.includes(normSnippet) || normSnippet.includes(text))) {
+            found = true;
+            matchedL = l;
+            break;
+          }
+        }
+      }
+      if (!found) {
+        continue;
+      }
+      if (matchedL !== -1) {
+        aLine = matchedL;
+        aItem.line = aLine;
+        aItem.lineStart = aLine;
+      }
+    }
+
+    // Reject out-of-bounds AI line numbers
+    if (maxLine !== null && (aLine < 1 || aLine > maxLine)) {
+      continue;
+    }
+
     const normFile = String(aFile).replace(/\\/g, '/').toLowerCase();
     const aCat = String(aItem.category || 'QUALITY').toUpperCase();
     const aTitle = String(aItem.title || '').trim().toLowerCase();
@@ -359,9 +486,9 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       const targetFile = sFile || aItem.file || defaultFile;
       const resolvedSev = resolveSeverity(sItem.severity, aItem.severity);
 
-      const rawDiffBefore = aItem.diff_before || sItem.diff_before || sItem.evidence || '';
+      const rawDiffBefore = aItem.diff_before || aItem.vulnerableSnippet || sItem.diff_before || sItem.evidence || '';
       const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
-      let effectiveDiffAfter = aItem.diff_after || sItem.diff_after || '';
+      let effectiveDiffAfter = aItem.diff_after || aItem.concreteFix || sItem.diff_after || '';
       if (!effectiveDiffAfter) {
         effectiveDiffAfter = generateStaticRemediationDiff(sItem.ruleId, effectiveDiffBefore);
       }
@@ -372,13 +499,18 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
         file: targetFile,
         line: sLine,
         lineNumber: sLine,
+        lineStart: sLine,
+        lineEnd: sLine,
         severity: resolvedSev,
         category: sItem.category || aItem.category || 'QUALITY',
-        ruleId: sItem.ruleId || 'HYBRID_FINDING',
+        ruleId: sItem.ruleId || aItem.ruleId || 'HYBRID_FINDING',
+        cweId: sItem.cweId || sItem.cwe || aItem.cweId || null,
         title: aItem.title || sItem.title || 'Code Finding',
         description: aItem.explanation || aItem.description || sItem.description || '',
         explanation: aItem.explanation || aItem.description || sItem.description || '',
         remediation: aItem.explanation || aItem.remediation || sItem.description || '',
+        vulnerableSnippet: effectiveDiffBefore,
+        concreteFix: effectiveDiffAfter,
         diff_before: effectiveDiffBefore,
         diff_after: effectiveDiffAfter,
         evidence: truncateSnippetLine(sItem.evidence || aItem.diff_before || ''),
@@ -409,13 +541,18 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       file: targetFile,
       line: sLine,
       lineNumber: sLine,
+      lineStart: sLine,
+      lineEnd: sLine,
       severity: sItem.severity || 'MEDIUM',
       category: sItem.category || 'QUALITY',
       ruleId: sItem.ruleId || 'STATIC_FINDING',
+      cweId: sItem.cweId || sItem.cwe || null,
       title: sItem.title || 'Static Analysis Finding',
       description: sItem.description || sItem.title || '',
       explanation: sItem.description || sItem.title || '',
       remediation: sItem.remediation || sItem.description || '',
+      vulnerableSnippet: effectiveDiffBefore,
+      concreteFix: effectiveDiffAfter,
       diff_before: effectiveDiffBefore,
       diff_after: effectiveDiffAfter,
       evidence: truncateSnippetLine(sItem.evidence || ''),
@@ -433,9 +570,9 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
     const aLine = typeof aItem.line === 'number' ? aItem.line : aItem.lineNumber || 1;
     const targetFile = aItem.file || defaultFile;
 
-    const rawDiffBefore = aItem.diff_before || '';
+    const rawDiffBefore = aItem.diff_before || aItem.vulnerableSnippet || '';
     const effectiveDiffBefore = truncateSnippetLine(rawDiffBefore);
-    let effectiveDiffAfter = aItem.diff_after || '';
+    let effectiveDiffAfter = aItem.diff_after || aItem.concreteFix || '';
     if (
       effectiveDiffAfter &&
       effectiveDiffAfter.includes('SELECT * FROM students') &&
@@ -453,16 +590,21 @@ function mergeAndDeduplicate(staticFindings = [], aiFindings = [], fileMetadata 
       file: targetFile,
       line: aLine,
       lineNumber: aLine,
+      lineStart: aItem.lineStart || aLine,
+      lineEnd: aItem.lineEnd || aLine,
       severity: aItem.severity || 'MEDIUM',
       category: aItem.category || 'QUALITY',
       ruleId: aItem.ruleId || `AI_${(aItem.category || 'FINDING').toUpperCase()}`,
+      cweId: aItem.cweId || null,
       title: aItem.title || 'AI Review Finding',
       description: aItem.explanation || aItem.description || aItem.title || '',
       explanation: aItem.explanation || aItem.description || aItem.title || '',
       remediation: aItem.explanation || aItem.remediation || '',
+      vulnerableSnippet: effectiveDiffBefore,
+      concreteFix: effectiveDiffAfter,
       diff_before: effectiveDiffBefore,
       diff_after: effectiveDiffAfter,
-      evidence: truncateSnippetLine(aItem.diff_before || ''),
+      evidence: truncateSnippetLine(aItem.diff_before || aItem.vulnerableSnippet || ''),
       source: 'GEMINI',
       engine_source: 'GEMINI',
       engine: 'Gemini AI',

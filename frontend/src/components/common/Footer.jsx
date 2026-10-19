@@ -14,9 +14,9 @@ export default function Footer({
 }) {
   return (
     <footer
-      className={`w-full bg-[#0F0F0F] border-t border-[#303030] text-xs py-5 px-4 sm:px-8 select-none transition-colors ${className}`}
+      className={`w-full bg-[#0F0F0F] border-t border-[#303030] text-xs py-2 sm:py-2.5 px-4 sm:px-8 select-none transition-colors shrink-0 ${className}`}
     >
-      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 sm:gap-4">
         {/* Left Side: Brand Identity */}
         <div className="flex items-center">
           <BrandLogo className="h-5 w-auto object-contain opacity-85 hover:opacity-100 transition-opacity" />

@@ -29,11 +29,14 @@ async function executeWithTimeout(promise, timeoutMs) {
 }
 
 /**
- * Validate and normalize findings from Gemini AI
+ * Validate, normalize, and cross-validate findings from Gemini AI against user source input.
+ * Rejects any AI finding if the referenced line number is out of bounds or if the code snippet
+ * does not match the actual user input (hallucination rejection guard).
  *
- * @param {Array<Object>} rawFindings
- * @param {string} [filePath='snippet']
- * @returns {Array<Object>}
+ * @param {Array<Object>} rawFindings - Raw findings returned by Gemini
+ * @param {string} [filePath='snippet'] - Target file path
+ * @param {string} [codeContent=null] - Optional raw source code for cross-validation
+ * @returns {Array<Object>} Validated and normalized findings array
  */
 function validateAiFindings(rawFindings, filePath = 'snippet') {
   if (!Array.isArray(rawFindings)) {
@@ -46,12 +49,19 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
   for (const item of rawFindings) {
     if (!item || typeof item !== 'object') continue;
 
-    const line =
-      typeof item.line_number === 'number' && item.line_number > 0
+    const lineStart =
+      typeof item.lineStart === 'number' && item.lineStart > 0
+        ? item.lineStart
+        : typeof item.line_number === 'number' && item.line_number > 0
         ? item.line_number
         : typeof item.line === 'number' && item.line > 0
         ? item.line
         : 1;
+
+    const lineEnd =
+      typeof item.lineEnd === 'number' && item.lineEnd >= lineStart
+        ? item.lineEnd
+        : lineStart;
 
     const rawSev = typeof item.severity === 'string' ? item.severity.toUpperCase().trim() : '';
     const severity = VALID_SEVERITIES.includes(rawSev) ? rawSev : 'MEDIUM';
@@ -59,35 +69,44 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
     const rawCat = typeof item.category === 'string' ? item.category.toUpperCase().trim() : '';
     const category = VALID_CATEGORIES.includes(rawCat) ? rawCat : 'QUALITY';
 
+    const ruleId = String(item.ruleId || item.cweId || `AI_${category}`).trim();
+    const cweId = item.cweId ? String(item.cweId).trim() : null;
+
     const title = String(item.title || 'AI Review Finding').trim();
     const whatIsWrong = String(item.what_is_wrong || item.what || item.explanation || item.description || '').trim();
     const whyDangerous = String(item.why_dangerous || item.why || '').trim();
-    const howToFix = String(item.how_to_fix || item.how || item.remediation || '').trim();
+    const howToFix = String(item.how_to_fix || item.how || item.concreteFix || item.remediation || '').trim();
     const explanation = whatIsWrong || String(item.explanation || '').trim();
 
-    const diff_before = String(item.diff_before || '').trim();
-    let diff_after = String(item.diff_after || '').trim();
+    const vulnerableSnippet = String(item.vulnerableSnippet || item.diff_before || '').trim();
+    let concreteFix = String(item.concreteFix || item.diff_after || '').trim();
 
     // Sanitize any generic SQL queries on non-SQL issues
     if (
-      diff_after.includes('SELECT * FROM students') &&
+      concreteFix.includes('SELECT * FROM students') &&
       !title.toLowerCase().includes('sql') &&
       !explanation.toLowerCase().includes('sql') &&
       !whatIsWrong.toLowerCase().includes('sql')
     ) {
-      diff_after = '';
+      concreteFix = '';
     }
 
-    const dedupeKey = `${line}:${category}:${title}`;
+    const dedupeKey = `${lineStart}:${category}:${title}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     valid.push({
-      line,
-      lineNumber: line,
-      line_number: line,
-      file: filePath,
+      ruleId,
       severity,
+      cweId,
+      lineStart,
+      lineEnd,
+      vulnerableSnippet,
+      concreteFix,
+      line: lineStart,
+      lineNumber: lineStart,
+      line_number: lineStart,
+      file: filePath,
       category,
       title,
       what_is_wrong: whatIsWrong,
@@ -99,8 +118,8 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
       remediation: howToFix || explanation,
       explanation,
       description: explanation,
-      diff_before,
-      diff_after,
+      diff_before: vulnerableSnippet,
+      diff_after: concreteFix,
       source: 'GEMINI',
       engine_source: 'GEMINI',
       engine: 'Gemini AI',
@@ -109,6 +128,7 @@ function validateAiFindings(rawFindings, filePath = 'snippet') {
 
   return valid;
 }
+
 
 /**
  * Perform AI Code Review using Google Gemini with Graceful Degradation

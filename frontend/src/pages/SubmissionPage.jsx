@@ -4,7 +4,6 @@ import {
   GitBranch,
   ArrowLeft,
   Clock,
-  User,
   Shield,
   Play,
   Loader2,
@@ -20,6 +19,15 @@ import BrandLogo from '../components/common/BrandLogo';
 import UserSessionPill from '../components/common/UserSessionPill';
 import { useAuth } from '../services/useAuth';
 import { API_BASE_URL } from '../config/api';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-javascript';
+import 'prismjs/components/prism-typescript';
+import 'prismjs/components/prism-python';
+import 'prismjs/components/prism-java';
+import 'prismjs/components/prism-c';
+import 'prismjs/components/prism-cpp';
+import 'prismjs/components/prism-sql';
+import { detectCodeLanguage } from '../utils/languageDetector';
 
 // Supported Language Configuration matching backend validators
 const LANGUAGES = [
@@ -85,8 +93,8 @@ export class StudentService {
     id: 'python',
     label: 'Python (.py)',
     file: 'student_manager.py',
-    coverage: 'AST + Bandit + AI Review',
-    activeBadge: 'AST Analysis Active',
+    coverage: 'Static Analysis + AI Review',
+    activeBadge: 'Static Scanner Active',
     sample: `import sqlite3
 
 def get_student_records(campus_id: str, min_gpa: float):
@@ -120,8 +128,8 @@ public class StudentDao {
     id: 'cpp',
     label: 'C++ (.cpp)',
     file: 'student_query.cpp',
-    coverage: 'Clang-Tidy + AST Analysis',
-    activeBadge: 'AST Analysis Active',
+    coverage: 'Static Analysis + AI Review',
+    activeBadge: 'Static Scanner Active',
     sample: `#include <iostream>
 #include <string>
 
@@ -130,6 +138,40 @@ void executeStudentQuery(const std::string& campusId, double minGpa) {
     std::string query = "SELECT * FROM students WHERE campus = '" + campusId + "' AND gpa >= " + std::to_string(minGpa);
     std::cout << "Executing query: " << query << std::endl;
 }`,
+  },
+  {
+    id: 'sql',
+    label: 'SQL (.sql)',
+    file: 'query.sql',
+    coverage: 'Dialect-Agnostic Query Scanner',
+    activeBadge: 'SQL Scanner Active',
+    sample: `-- Student & Department Query Procedure
+-- Demonstrates dynamic query concatenation, unindexed wildcard search, and unconstrained mutation
+
+CREATE OR REPLACE PROCEDURE find_enrolled_students(
+    IN p_department_name VARCHAR(100),
+    IN p_min_gpa NUMERIC
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_sql TEXT;
+    v_cursor REFCURSOR;
+BEGIN
+    -- VULNERABILITY: Insecure dynamic query string concatenation allows SQL Injection (CWE-89)
+    v_sql := 'SELECT s.student_id, s.full_name, s.gpa, d.dept_name ' ||
+             'FROM students s ' ||
+             'JOIN departments d ON s.dept_id = d.dept_id ' ||
+             'WHERE d.dept_name LIKE ''%' || p_department_name || '%'' ' ||
+             'AND s.gpa >= ' || p_min_gpa;
+
+    -- BOTTLENECK: Leading wildcard in LIKE ('%...') forces a full table scan and prevents index utilization
+    OPEN v_cursor FOR EXECUTE v_sql;
+
+    -- ANTI-PATTERN: Unconstrained DELETE statement without WHERE clause purges entire audit table
+    DELETE FROM audit_logs;
+END;
+$$;`,
   },
 ];
 
@@ -140,6 +182,7 @@ const LANGUAGE_EXTENSIONS = {
   python: '.py',
   java: '.java',
   cpp: '.cpp',
+  sql: '.sql',
 };
 
 const MAX_CHARS = 50000;
@@ -150,20 +193,99 @@ export default function SubmissionPage() {
   // Mode & State
   const [sourceType, setSourceType] = useState('direct'); // 'direct' | 'github'
   const [projectName, setProjectName] = useState('');
-  const [selectedLang, setSelectedLang] = useState(null);
+  
+  // Language Selection: Auto Detect active by default with manual override capability
+  const [isAutoDetect, setIsAutoDetect] = useState(true);
+  const [manualLang, setManualLang] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [code, setCode] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
   const [githubBranch, setGithubBranch] = useState('main');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [errorNonce, setErrorNonce] = useState(0);
+  const errorBannerRef = useRef(null);
+  const pendingFocusTargetRef = useRef(null);
   const { user: currentUser, token: authToken, isGuest, guestSessionId } = useAuth();
   const autoDetectedRepoNameRef = useRef('');
 
-  // Refs for editor and line numbers gutter synchronization
+  // Automatically detect language based on current code snippet in real time
+  const autoDetectedLangId = useMemo(() => {
+    if (!code || typeof code !== 'string' || !code.trim()) return 'javascript';
+    try {
+      return detectCodeLanguage(code);
+    } catch (err) {
+      console.warn('[Re:Code] Language detection fallback:', err);
+      return 'javascript';
+    }
+  }, [code]);
+
+  const autoDetectedLang = useMemo(() => {
+    return LANGUAGES.find((l) => l.id === autoDetectedLangId) || LANGUAGES[0];
+  }, [autoDetectedLangId]);
+
+  // Effective language resolved from manual override or auto-detection (guaranteed non-null)
+  const effectiveLang = useMemo(() => {
+    if (!isAutoDetect && manualLang) {
+      return manualLang;
+    }
+    return autoDetectedLang || LANGUAGES[0];
+  }, [isAutoDetect, manualLang, autoDetectedLang]);
+
+  // Refs for editor, line numbers gutter, and syntax highlighting synchronization
   const textareaRef = useRef(null);
   const gutterRef = useRef(null);
+  const highlightRef = useRef(null);
   const dropdownRef = useRef(null);
+
+  // Trigger validation error: updates message and queues smooth scroll and element focus
+  const triggerValidationError = (message, focusTarget = null) => {
+    pendingFocusTargetRef.current = focusTarget;
+    setErrorMsg(message);
+    setErrorNonce((prev) => prev + 1);
+  };
+
+  // Smoothly scroll to error banner and focus invalid input on validation failure or API error
+  useEffect(() => {
+    if (!errorMsg) return;
+
+    const timer = setTimeout(() => {
+      const banner = errorBannerRef.current || document.getElementById('errorBanner');
+      if (banner) {
+        // Sticky header height: h-14 = 56px. Add 24px breathing space so banner is never obscured
+        const headerHeight = 56;
+        const breathingRoom = 24;
+        const bannerRect = banner.getBoundingClientRect();
+        const targetScrollY = window.scrollY + bannerRect.top - (headerHeight + breathingRoom);
+
+        window.scrollTo({
+          top: Math.max(0, targetScrollY),
+          behavior: 'smooth',
+        });
+      }
+
+      // Automatically place focus on the invalid input field if applicable
+      const target = pendingFocusTargetRef.current;
+      if (target) {
+        let el = null;
+        if (typeof target === 'string') {
+          el = document.getElementById(target);
+        } else if (target?.current) {
+          el = target.current;
+        } else if (target?.focus) {
+          el = target;
+        }
+
+        if (el && typeof el.focus === 'function') {
+          // preventScroll: true ensures keyboard focus is acquired without jarring the smooth scroll
+          el.focus({ preventScroll: true });
+        }
+        pendingFocusTargetRef.current = null;
+      }
+    }, 40);
+
+    return () => clearTimeout(timer);
+  }, [errorMsg, errorNonce]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -176,10 +298,16 @@ export default function SubmissionPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Synchronize textarea and gutter scrolling
+  // Synchronize textarea, gutter, and syntax highlight underlay scrolling
   const handleScroll = () => {
-    if (textareaRef.current && gutterRef.current) {
-      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    if (textareaRef.current) {
+      if (gutterRef.current) {
+        gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+      }
+      if (highlightRef.current) {
+        highlightRef.current.scrollTop = textareaRef.current.scrollTop;
+        highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
+      }
     }
   };
 
@@ -220,29 +348,62 @@ export default function SubmissionPage() {
 
   // Dynamic filename auto-generated from Project Name and selected Language
   const dynamicFilename = useMemo(() => {
-    const raw = (projectName || '').trim();
+    let raw = (projectName || '').trim();
+
+    // Strip existing file extension if user typed one (e.g. "af.js" or "af.py" -> "af")
+    const lastDot = raw.lastIndexOf('.');
+    if (lastDot > 0 && lastDot < raw.length - 1) {
+      const possibleExt = raw.slice(lastDot).toLowerCase();
+      const knownExts = ['.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.cpp', '.cc', '.c', '.h', '.sql', '.html', '.txt'];
+      if (knownExts.includes(possibleExt)) {
+        raw = raw.slice(0, lastDot);
+      }
+    }
+
     const sanitized = raw
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '');
 
     const baseName = sanitized || 'source_code';
-    const ext = selectedLang ? (LANGUAGE_EXTENSIONS[selectedLang.id] || `.${selectedLang.id}`) : '.js';
+    const ext = effectiveLang ? (LANGUAGE_EXTENSIONS[effectiveLang.id] || `.${effectiveLang.id}`) : '.js';
     return `${baseName}${ext}`;
-  }, [projectName, selectedLang]);
+  }, [projectName, effectiveLang]);
+
+  // Prism syntax highlighting dynamically bound to selected language grammar
+  const highlightedCode = useMemo(() => {
+    if (!code) return '';
+    const langId = effectiveLang?.id || 'javascript';
+    let grammar = Prism.languages[langId];
+    if (!grammar) {
+      if (langId === 'sql') grammar = Prism.languages.sql;
+      else if (langId === 'cpp') grammar = Prism.languages.cpp || Prism.languages.c;
+      else if (langId === 'typescript' || langId === 'ts') grammar = Prism.languages.typescript || Prism.languages.javascript;
+      else if (langId === 'python' || langId === 'py') grammar = Prism.languages.python;
+      else if (langId === 'java') grammar = Prism.languages.java;
+      else grammar = Prism.languages.javascript;
+    }
+    // Prevent trailing newline from collapsing in HTML <pre>
+    const safeCode = code.endsWith('\n') ? `${code} ` : code;
+    try {
+      return Prism.highlight(safeCode, grammar || Prism.languages.javascript, langId);
+    } catch {
+      return safeCode.replace(/[&<>'"]/g, (tag) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
+    }
+  }, [code, effectiveLang]);
 
   // Load sample code for currently selected language
   const handleLoadSample = () => {
     setErrorMsg('');
-    if (!selectedLang) {
-      setErrorMsg('Please select a programming language first to load sample code.');
-      setDropdownOpen(true);
-      return;
-    }
-    setCode(selectedLang.sample);
+    const targetLang = !isAutoDetect && manualLang ? manualLang : (autoDetectedLang || LANGUAGES[0]);
+    setCode(targetLang.sample);
     if (textareaRef.current) {
       textareaRef.current.scrollTop = 0;
       textareaRef.current.focus();
+    }
+    if (highlightRef.current) {
+      highlightRef.current.scrollTop = 0;
+      highlightRef.current.scrollLeft = 0;
     }
   };
 
@@ -254,11 +415,24 @@ export default function SubmissionPage() {
       textareaRef.current.scrollTop = 0;
       textareaRef.current.focus();
     }
+    if (highlightRef.current) {
+      highlightRef.current.scrollTop = 0;
+      highlightRef.current.scrollLeft = 0;
+    }
   };
 
-  // Select language from dropdown
+  // Select Auto Detect mode (enables dynamic heuristic switching)
+  const handleSelectAutoDetect = () => {
+    setIsAutoDetect(true);
+    setManualLang(null);
+    setDropdownOpen(false);
+    setErrorMsg('');
+  };
+
+  // Select manual language override (locks choice and disables auto switching)
   const handleSelectLanguage = (lang) => {
-    setSelectedLang(lang);
+    setIsAutoDetect(false);
+    setManualLang(lang);
     setDropdownOpen(false);
     setErrorMsg('');
   };
@@ -296,18 +470,14 @@ export default function SubmissionPage() {
     }
 
     if (sourceType === 'direct' && !effectiveProjectName) {
-      setErrorMsg('Please enter a project name.');
-      const projectInput = document.getElementById('projectNameInput');
-      if (projectInput) {
-        projectInput.focus();
-      }
+      triggerValidationError('Please enter a project name.', 'projectNameInput');
       return;
     }
 
     // 2. Programming Language Validation (Required only for direct code paste)
-    if (sourceType === 'direct' && !selectedLang) {
-      setErrorMsg('Please select a programming language.');
+    if (sourceType === 'direct' && !effectiveLang) {
       setDropdownOpen(true);
+      triggerValidationError('Please select a programming language.', 'langDropdownTrigger');
       return;
     }
 
@@ -315,14 +485,11 @@ export default function SubmissionPage() {
     let normalizedGithubUrl = '';
     if (sourceType === 'direct') {
       if (!code.trim()) {
-        setErrorMsg('Please input or paste your code snippet before running review.');
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-        }
+        triggerValidationError('Please input or paste your code snippet before running review.', textareaRef);
         return;
       }
       if (code.length > MAX_CHARS) {
-        setErrorMsg(`Code snippet exceeds maximum limit of ${MAX_CHARS.toLocaleString()} characters.`);
+        triggerValidationError(`Code snippet exceeds maximum limit of ${MAX_CHARS.toLocaleString()} characters.`, textareaRef);
         return;
       }
     } else {
@@ -330,11 +497,11 @@ export default function SubmissionPage() {
       const githubPattern = /^https:\/\/github\.com\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/;
       normalizedGithubUrl = githubUrl.trim().replace(/\/+$/, '');
       if (!normalizedGithubUrl) {
-        setErrorMsg('Please enter a public GitHub repository URL.');
+        triggerValidationError('Please enter a public GitHub repository URL.', 'githubUrlInput');
         return;
       }
       if (!githubPattern.test(normalizedGithubUrl)) {
-        setErrorMsg('Invalid GitHub URL. Must strictly match: https://github.com/owner/repository');
+        triggerValidationError('Invalid GitHub URL. Must strictly match: https://github.com/owner/repository', 'githubUrlInput');
         return;
       }
     }
@@ -365,8 +532,9 @@ export default function SubmissionPage() {
       }
 
       if (sourceType === 'direct') {
-        payload.language = selectedLang.id;
+        payload.language = effectiveLang.id;
         payload.content = code;
+        payload.code = code;
         payload.filePath = dynamicFilename;
       } else {
         payload.url = normalizedGithubUrl;
@@ -407,10 +575,10 @@ export default function SubmissionPage() {
 
       if (!res.ok || responseData.status === 'error') {
         if (res.status === 404) {
-          setErrorMsg('Endpoint not found: POST /api/v1/reviews/run. Please verify the Express server is running on port 5000.');
+          triggerValidationError('Endpoint not found: POST /api/v1/reviews/run. Please verify the Express server is running on port 5000.');
         } else {
           const message = responseData.message || responseData.error || `Review pipeline execution failed (HTTP ${res.status}).`;
-          setErrorMsg(message);
+          triggerValidationError(message);
         }
         setLoading(false);
         return;
@@ -421,7 +589,7 @@ export default function SubmissionPage() {
       if (reviewId) {
         navigate(`/review/${reviewId}`, { state: { review: responseData.data || responseData } });
       } else {
-        setErrorMsg('Pipeline executed, but review UUID was not returned.');
+        triggerValidationError('Pipeline executed, but review UUID was not returned.');
         setLoading(false);
       }
     } catch (err) {
@@ -433,9 +601,9 @@ export default function SubmissionPage() {
         err.message?.includes('Network request failed');
 
       if (isOffline) {
-        setErrorMsg('Backend server is unreachable. Please verify the Express server is running on port 5000.');
+        triggerValidationError('Backend server is unreachable. Please verify the Express server is running on port 5000.');
       } else {
-        setErrorMsg(`Failed to connect to review pipeline: ${err.message}`);
+        triggerValidationError(`Failed to connect to review pipeline: ${err.message}`);
       }
       setLoading(false);
     }
@@ -586,7 +754,7 @@ export default function SubmissionPage() {
                 </div>
               </div>
               <p className="text-xs text-[#AAAAAA] mt-2 pr-6 leading-relaxed">
-                Scan public repositories with automated AST file discovery &amp; SSRF safeguards.
+                Import files directly from any public GitHub repository for automated analysis with SSRF safeguards.
               </p>
             </div>
 
@@ -596,11 +764,12 @@ export default function SubmissionPage() {
           {errorMsg && (
             <div
               id="errorBanner"
+              ref={errorBannerRef}
               role="alert"
-              className="p-3.5 rounded-lg bg-[#FF4D4D]/10 border border-[#FF4D4D]/30 text-[#FF4D4D] text-xs flex items-start gap-2.5"
+              className="scroll-mt-24 p-3.5 rounded-lg bg-[#FF4D4D]/10 border border-[#FF4D4D]/30 text-[#FF4D4D] text-xs flex items-start gap-2.5 transition-all"
             >
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
+              <span className="leading-relaxed">{errorMsg}</span>
             </div>
           )}
 
@@ -626,28 +795,60 @@ export default function SubmissionPage() {
                     onChange={(e) => setProjectName(e.target.value)}
                     placeholder="e.g., Student Management System"
                     autoComplete="off"
-                    className="bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
+                    className="scroll-mt-24 bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
                   />
                 </div>
 
                 {/* Programming Language Dropdown (Direct Mode Only) */}
                 <div className="flex flex-col relative" ref={dropdownRef}>
-                  <label className="font-mono text-xs text-[#717171] uppercase tracking-wider mb-1.5 select-none">
-                    PROGRAMMING LANGUAGE
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5 select-none">
+                    <label className="font-mono text-xs text-[#717171] uppercase tracking-wider">
+                      PROGRAMMING LANGUAGE
+                    </label>
+                    {isAutoDetect && (code || '').trim() && (
+                      <span
+                        id="autoDetectedBadge"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-medium text-[#02C8F0] bg-[#02C8F0]/10 border border-[#02C8F0]/25 transition-all"
+                      >
+                        <Sparkles className="w-3 h-3 text-[#02C8F0]" />
+                        Auto-detected ({(effectiveLang?.label || 'Code').split(' ')[0]})
+                      </span>
+                    )}
+                  </div>
                   
                   <div
                     id="langDropdownTrigger"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setDropdownOpen(!dropdownOpen)}
-                    className="bg-[#212121] border border-[#303030] text-[#F1F1F1] px-3.5 py-2.5 rounded-lg text-sm w-full flex items-center justify-between cursor-pointer select-none hover:border-[#3F3F3F] transition-colors"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setDropdownOpen((prev) => !prev);
+                      }
+                    }}
+                    className="scroll-mt-24 bg-[#212121] border border-[#303030] text-[#F1F1F1] px-3.5 py-2.5 rounded-lg text-sm w-full flex items-center justify-between cursor-pointer select-none hover:border-[#3F3F3F] focus:border-[#02C8F0] focus:outline-none transition-colors"
                   >
                     <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${selectedLang ? 'bg-[#02C8F0]' : 'bg-[#717171]'}`} />
+                      <span className={`w-2 h-2 rounded-full ${effectiveLang ? 'bg-[#02C8F0]' : 'bg-[#717171]'}`} />
                       <span
                         id="selectedLanguageLabel"
-                        className={selectedLang ? 'text-[#F1F1F1]' : 'text-[#717171]'}
+                        className="text-[#F1F1F1] flex items-center gap-1.5"
                       >
-                        {selectedLang ? selectedLang.label : 'Select Language...'}
+                        {isAutoDetect ? (
+                          <>
+                            <span>Auto Detect</span>
+                            {(code || '').trim() ? (
+                              <span className="text-[#02C8F0] font-mono text-xs">
+                                ({(effectiveLang?.label || 'Code').split(' ')[0]})
+                              </span>
+                            ) : (
+                              <span className="text-[#717171] font-mono text-xs">(default)</span>
+                            )}
+                          </>
+                        ) : (
+                          manualLang?.label || 'Select Language...'
+                        )}
                       </span>
                     </div>
                     <ChevronDown
@@ -664,18 +865,44 @@ export default function SubmissionPage() {
                       id="langDropdownList"
                       className="absolute top-full left-0 right-0 mt-1.5 bg-[#212121] border border-[#3F3F3F] rounded-lg shadow-xl z-30 py-1 overflow-hidden"
                     >
+                      {/* Auto Detect Option (Default) */}
+                      <div
+                        id="langOptionAutoDetect"
+                        onClick={handleSelectAutoDetect}
+                        className={`px-3.5 py-2.5 text-xs text-[#F1F1F1] hover:bg-[#272727] cursor-pointer flex items-center justify-between border-b border-[#303030]/60 ${
+                          isAutoDetect ? 'bg-[#272727]' : ''
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-3.5 h-3.5 text-[#02C8F0]" />
+                          <span className="font-medium">Auto Detect</span>
+                          {isAutoDetect && (code || '').trim() && (
+                            <span className="text-[11px] font-mono text-[#02C8F0]/90">
+                              ({(effectiveLang?.label || 'Code').split(' ')[0]})
+                            </span>
+                          )}
+                        </div>
+                        {isAutoDetect && (
+                          <span className="font-mono text-[11px] text-[#02C8F0] flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Active
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Manual Language Options */}
                       {LANGUAGES.map((lang) => (
                         <div
                           key={lang.id}
+                          id={`langOption-${lang.id}`}
                           onClick={() => handleSelectLanguage(lang)}
                           className={`px-3.5 py-2.5 text-xs text-[#F1F1F1] hover:bg-[#272727] cursor-pointer flex items-center justify-between ${
-                            selectedLang?.id === lang.id ? 'bg-[#272727]' : ''
+                            !isAutoDetect && manualLang?.id === lang.id ? 'bg-[#272727]' : ''
                           }`}
                         >
                           <div className="flex items-center gap-2">
                             <span>{lang.label}</span>
                           </div>
-                          {selectedLang?.id === lang.id && (
+                          {!isAutoDetect && manualLang?.id === lang.id && (
                             <span className="font-mono text-[11px] text-[#02C8F0] flex items-center gap-1">
                               <Check className="w-3 h-3" /> Active
                             </span>
@@ -707,7 +934,7 @@ export default function SubmissionPage() {
                     }}
                     placeholder="e.g., student-management-system (or leave blank to auto-detect from repo name)"
                     autoComplete="off"
-                    className="bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
+                    className="scroll-mt-24 bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
                   />
                 </div>
               </div>
@@ -763,6 +990,15 @@ export default function SubmissionPage() {
                         <FileCode className="w-3.5 h-3.5 text-[#02C8F0]" />
                         <span>{dynamicFilename}</span>
                       </div>
+                      {effectiveLang && (
+                        <span
+                          id="activeGrammarBadge"
+                          className="font-mono text-[11px] text-[#02C8F0] bg-[#02C8F0]/10 border border-[#02C8F0]/20 px-2 py-0.5 rounded hidden sm:inline-flex items-center gap-1"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#02C8F0]" />
+                          {isAutoDetect ? `Auto: ${(effectiveLang?.label || 'Code').split(' ')[0]}` : `${(effectiveLang?.label || 'Code').split(' ')[0]} Mode`}
+                        </span>
+                      )}
                     </div>
                     <div id="topLineCounter" className="font-mono text-xs text-[#717171]">
                       {lineCount} {lineCount === 1 ? 'line' : 'lines'}
@@ -785,8 +1021,21 @@ export default function SubmissionPage() {
                       ))}
                     </div>
 
-                    {/* Code Input Textarea */}
-                    <div className="flex-1 relative flex flex-col">
+                    {/* Code Input Textarea & Highlight Overlay */}
+                    <div className="flex-1 relative flex flex-col min-h-[220px] overflow-hidden">
+                      {/* Highlighted Code Underlay */}
+                      <pre
+                        ref={highlightRef}
+                        aria-hidden="true"
+                        className="absolute inset-0 m-0 p-0 font-mono text-xs leading-relaxed overflow-hidden pointer-events-none whitespace-pre-wrap break-all text-[#F1F1F1] select-none"
+                      >
+                        <code
+                          className={`language-${effectiveLang?.id || 'javascript'}`}
+                          dangerouslySetInnerHTML={{ __html: highlightedCode }}
+                        />
+                      </pre>
+
+                      {/* Interactive Textarea Overlay */}
                       <textarea
                         id="codeEditorArea"
                         ref={textareaRef}
@@ -796,7 +1045,7 @@ export default function SubmissionPage() {
                         onScroll={handleScroll}
                         placeholder="// Paste your source code here (e.g. controllers, services, algorithms)..."
                         spellCheck="false"
-                        className="w-full h-full min-h-[220px] bg-transparent text-[#F1F1F1] font-mono text-xs placeholder:text-[#717171] placeholder:italic focus:outline-none resize-none leading-relaxed border-none p-0 overflow-y-auto"
+                        className="scroll-mt-24 absolute inset-0 w-full h-full bg-transparent text-transparent caret-[#02C8F0] font-mono text-xs placeholder:text-[#717171] placeholder:italic focus:outline-none resize-none leading-relaxed border-none p-0 overflow-y-auto selection:bg-[#02C8F0]/30 selection:text-transparent"
                       />
                     </div>
 
@@ -810,7 +1059,9 @@ export default function SubmissionPage() {
                     </div>
                     
                     <div className="flex items-center gap-3">
-                      <span className="hidden sm:inline">AST Parser: Ready</span>
+                      <span className="hidden sm:inline">
+                        {effectiveLang ? `${(effectiveLang?.label || 'Code').split(' ')[0]} Dual-Engine: Ready` : 'Dual-Engine Pipeline: Ready'}
+                      </span>
                       <div className="w-24 h-1.5 bg-[#212121] rounded-full overflow-hidden">
                         <div
                           id="usageProgressBar"
@@ -844,7 +1095,7 @@ export default function SubmissionPage() {
                     onChange={(e) => handleGithubUrlChange(e.target.value)}
                     placeholder="https://github.com/owner/repository"
                     autoComplete="off"
-                    className="bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
+                    className="scroll-mt-24 bg-[#212121] text-[#F1F1F1] border border-[#303030] focus:border-[#02C8F0] focus:outline-none rounded-lg px-3.5 py-2.5 font-body-md text-sm w-full transition-colors placeholder:text-[#717171] [&:-webkit-autofill]:bg-[#212121] [&:-webkit-autofill]:text-[#F1F1F1] [&:-webkit-autofill]:shadow-[0_0_0_1000px_#212121_inset] [&:-webkit-autofill]:[-webkit-text-fill-color:#F1F1F1]"
                   />
                 </div>
 
@@ -893,7 +1144,7 @@ export default function SubmissionPage() {
                 {loading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Processing AST...</span>
+                    <span>Analyzing Code...</span>
                   </>
                 ) : (
                   <>

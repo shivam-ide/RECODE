@@ -3,6 +3,7 @@ const {
   analyzeFiles,
   resolveLanguage,
   RULES,
+  generateStaticRemediationDiff,
 } = require('../src/services/analysis/staticAnalyzer');
 
 describe('Module 7: Static AST Code Analyzer (staticAnalyzer.js)', () => {
@@ -590,6 +591,114 @@ public class Config {
 `;
       const findings = analyzeFile('src/Config.java', javaSnippet, 'java');
       expect(findings.some((f) => f.ruleId === 'HARDCODED_SECRET')).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // SUITE 10: SQL Analysis Engine, Dynamic Concat, Cartesian Joins & Remediations
+  // ============================================================================
+  describe('SQL Analysis Engine & Remediation Output', () => {
+    it('should generate concrete SQL fixes for UNRESTRICTED_MUTATION without generic placeholders', () => {
+      // 1. UPDATE table SET ...
+      const updateGeneric = generateStaticRemediationDiff('UNRESTRICTED_MUTATION', 'UPDATE table SET ...', 'sql');
+      expect(updateGeneric).toBe('UPDATE table SET ... WHERE id = :target_id;');
+      expect(updateGeneric).not.toContain('// Refactored safe code block');
+      expect(updateGeneric).not.toContain('//');
+
+      // 2. DELETE FROM table
+      const deleteGeneric = generateStaticRemediationDiff('UNRESTRICTED_MUTATION', 'DELETE FROM table', 'sql');
+      expect(deleteGeneric).toBe('DELETE FROM table WHERE id = :target_id;');
+      expect(deleteGeneric).not.toContain('// Refactored safe code block');
+      expect(deleteGeneric).not.toContain('//');
+
+      // 3. Concrete UPDATE with SET clause
+      const updateSpecific = generateStaticRemediationDiff('UNRESTRICTED_MUTATION', "UPDATE users SET status = 'inactive';", 'sql');
+      expect(updateSpecific).toBe("UPDATE users SET status = 'inactive' WHERE id = :target_id;");
+      expect(updateSpecific).not.toContain('//');
+
+      // 4. Concrete DELETE FROM clause
+      const deleteSpecific = generateStaticRemediationDiff('UNRESTRICTED_MUTATION', 'DELETE FROM orders;', 'sql');
+      expect(deleteSpecific).toBe('DELETE FROM orders WHERE id = :target_id;');
+      expect(deleteSpecific).not.toContain('//');
+    });
+
+    it('should detect UNRESTRICTED_MUTATION on UPDATE and DELETE statements without WHERE clauses', () => {
+      const sqlSnippet = `
+UPDATE users SET status = 'active';
+DELETE FROM audit_logs;
+UPDATE accounts SET balance = 100 WHERE id = 1;
+DELETE FROM orders WHERE status = 'cancelled';
+`;
+      const findings = analyzeFile('schema/mutations.sql', sqlSnippet, 'sql');
+      const mutationFindings = findings.filter((f) => f.ruleId === 'UNRESTRICTED_MUTATION');
+
+      expect(mutationFindings.length).toBe(2);
+      expect(mutationFindings[0].line).toBe(2);
+      expect(mutationFindings[1].line).toBe(3);
+      expect(mutationFindings[0].diff_after).toBe("UPDATE users SET status = 'active' WHERE id = :target_id;");
+      expect(mutationFindings[1].diff_after).toBe('DELETE FROM audit_logs WHERE id = :target_id;');
+    });
+
+    it('should detect dynamic SQL concatenation (e.g. CUST_ + @dynamicInput) as high-risk CWE-89', () => {
+      const dynamicSql = `
+SELECT * FROM customers WHERE code = 'CUST_' + @dynamicInput;
+`;
+      const findings = analyzeFile('queries/customerQuery.sql', dynamicSql, 'sql');
+      const sqlInjectionFinding = findings.find((f) => f.ruleId === 'SQL_INJECTION');
+
+      expect(sqlInjectionFinding).toBeDefined();
+      expect(sqlInjectionFinding.severity).toBe('HIGH');
+      expect(sqlInjectionFinding.category).toBe('SECURITY');
+      expect(sqlInjectionFinding.description).toContain('CWE-89');
+      expect(sqlInjectionFinding.description).toContain('parameterized');
+      expect(sqlInjectionFinding.diff_after).toContain(':target_param');
+      expect(sqlInjectionFinding.diff_after).not.toContain('//');
+      expect(sqlInjectionFinding.diff_after).toContain('--');
+    });
+
+    it('should detect implicit comma joins as unintended Cartesian products', () => {
+      const cartesianSql = `
+SELECT * FROM orders o, customers c, products p;
+`;
+      const findings = analyzeFile('reports/salesReport.sql', cartesianSql, 'sql');
+      const cartesianFinding = findings.find((f) => f.ruleId === 'IMPLICIT_CARTESIAN_JOIN');
+
+      expect(cartesianFinding).toBeDefined();
+      expect(cartesianFinding.severity).toBe('HIGH');
+      expect(cartesianFinding.category).toBe('OPTIMIZATION');
+      expect(cartesianFinding.title).toContain('Cartesian Product');
+      expect(cartesianFinding.diff_after).toContain('-- Replace implicit comma join');
+      expect(cartesianFinding.diff_after).not.toContain('//');
+    });
+
+    it('should NOT flag legitimate explicit JOINs or comma joins with proper equality conditions', () => {
+      const cleanSql = `
+SELECT * FROM orders o INNER JOIN customers c ON o.customer_id = c.id;
+SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id;
+`;
+      const findings = analyzeFile('queries/cleanJoins.sql', cleanSql, 'sql');
+      const cartesianFindings = findings.filter((f) => f.ruleId === 'IMPLICIT_CARTESIAN_JOIN');
+
+      expect(cartesianFindings.length).toBe(0);
+    });
+
+    it('should ensure all SQL remediation snippets strictly use SQL comment syntax (--) and never (//)', () => {
+      const rules = [
+        'UNRESTRICTED_MUTATION',
+        'IMPLICIT_CARTESIAN_JOIN',
+        'SQL_INJECTION',
+        'SQL_LEADING_WILDCARD',
+        'UNUSED_VARIABLE',
+        'HARDCODED_SECRET',
+        'CONSOLE_LOG_STMT',
+        'PARSER_ERROR',
+      ];
+
+      for (const rule of rules) {
+        const remediation = generateStaticRemediationDiff(rule, "SELECT * FROM users WHERE code = 'test';", 'sql');
+        expect(remediation).not.toContain('//');
+        expect(remediation).not.toContain('// Refactored safe code block');
+      }
     });
   });
 });

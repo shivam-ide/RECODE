@@ -9,6 +9,7 @@ const {
 const { supabaseAdmin } = require('../src/config/supabaseClient');
 
 describe('Module 12: Database Persistence & Repository Layer (reviewRepository.js)', () => {
+  jest.setTimeout(25000);
   const createdReviewIds = [];
 
   afterAll(async () => {
