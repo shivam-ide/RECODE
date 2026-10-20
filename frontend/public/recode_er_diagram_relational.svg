@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 850" width="1100" height="850">
+  <defs>
+    <style>
+      .tbl-header { fill: #1e293b; }
+      .tbl-bg { fill: #ffffff; stroke: #334155; stroke-width: 1.5; }
+      .tbl-row-alt { fill: #f8fafc; }
+      .tbl-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 700; fill: #ffffff; }
+      .col-pk { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 700; fill: #b45309; }
+      .col-fk { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 700; fill: #0284c7; }
+      .col-name { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 600; fill: #0f172a; }
+      .col-type { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 400; fill: #64748b; }
+      .rel-line { stroke: #475569; stroke-width: 1.6; fill: none; }
+      .rel-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 600; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="850" fill="#f1f5f9" />
+
+  <!-- Title Banner -->
+  <rect x="40" y="25" width="1020" height="50" rx="6" fill="#0f172a" />
+  <text x="550" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">Re:Code — Relational Database Schema &amp; ER Architecture</text>
+
+  <!-- TABLE 1: PROFILES -->
+  <g transform="translate(60, 110)">
+    <rect width="260" height="180" rx="6" class="tbl-bg" />
+    <path d="M 0,6 Q 0,0 6,0 L 254,0 Q 260,0 260,6 L 260,32 L 0,32 Z" class="tbl-header" />
+    <text x="130" y="21" class="tbl-title" text-anchor="middle">profiles (USER)</text>
+    <!-- Rows -->
+    <rect x="1" y="32" width="258" height="28" fill="#ffffff" />
+    <text x="15" y="50" class="col-pk">PK</text>
+    <text x="45" y="50" class="col-name">id</text>
+    <text x="245" y="50" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="60" width="258" height="28" class="tbl-row-alt" />
+    <text x="45" y="78" class="col-name">email</text>
+    <text x="245" y="78" class="col-type" text-anchor="end">TEXT (UQ)</text>
+
+    <rect x="1" y="88" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="106" class="col-name">full_name</text>
+    <text x="245" y="106" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="116" width="258" height="28" class="tbl-row-alt" />
+    <text x="45" y="134" class="col-name">role</text>
+    <text x="245" y="134" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="144" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="162" class="col-name">created_at</text>
+    <text x="245" y="162" class="col-type" text-anchor="end">TIMESTAMPTZ</text>
+  </g>
+
+  <!-- TABLE 2: REVIEWS -->
+  <g transform="translate(420, 110)">
+    <rect width="280" height="340" rx="6" class="tbl-bg" />
+    <path d="M 0,6 Q 0,0 6,0 L 274,0 Q 280,0 280,6 L 280,32 L 0,32 Z" class="tbl-header" />
+    <text x="140" y="21" class="tbl-title" text-anchor="middle">reviews (AUDIT SESSION)</text>
+    
+    <rect x="1" y="32" width="278" height="28" fill="#ffffff" />
+    <text x="15" y="50" class="col-pk">PK</text>
+    <text x="45" y="50" class="col-name">id</text>
+    <text x="265" y="50" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="60" width="278" height="28" class="tbl-row-alt" />
+    <text x="15" y="78" class="col-fk">FK</text>
+    <text x="45" y="78" class="col-name">user_id</text>
+    <text x="265" y="78" class="col-type" text-anchor="end">UUID (NULLABLE)</text>
+
+    <rect x="1" y="88" width="278" height="28" fill="#ffffff" />
+    <text x="45" y="106" class="col-name">guest_session_id</text>
+    <text x="265" y="106" class="col-type" text-anchor="end">TEXT (NULLABLE)</text>
+
+    <rect x="1" y="116" width="278" height="28" class="tbl-row-alt" />
+    <text x="45" y="134" class="col-name">project_name</text>
+    <text x="265" y="134" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="144" width="278" height="28" fill="#ffffff" />
+    <text x="45" y="162" class="col-name">source_type</text>
+    <text x="265" y="162" class="col-type" text-anchor="end">TEXT (direct|github)</text>
+
+    <rect x="1" y="172" width="278" height="28" class="tbl-row-alt" />
+    <text x="45" y="190" class="col-name">repo_url</text>
+    <text x="265" y="190" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="200" width="278" height="28" fill="#ffffff" />
+    <text x="45" y="218" class="col-name">health_score</text>
+    <text x="265" y="218" class="col-type" text-anchor="end">NUMERIC(5,2)</text>
+
+    <rect x="1" y="228" width="278" height="28" class="tbl-row-alt" />
+    <text x="45" y="246" class="col-name">grade</text>
+    <text x="265" y="246" class="col-type" text-anchor="end">TEXT (A-F)</text>
+
+    <rect x="1" y="256" width="278" height="28" fill="#ffffff" />
+    <text x="45" y="274" class="col-name">status</text>
+    <text x="265" y="274" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="284" width="278" height="28" class="tbl-row-alt" />
+    <text x="45" y="302" class="col-name">partial_mode</text>
+    <text x="265" y="302" class="col-type" text-anchor="end">BOOLEAN</text>
+
+    <rect x="1" y="312" width="278" height="28" fill="#ffffff" />
+    <text x="45" y="330" class="col-name">created_at</text>
+    <text x="265" y="330" class="col-type" text-anchor="end">TIMESTAMPTZ</text>
+  </g>
+
+  <!-- TABLE 3: REVIEW_REPORTS -->
+  <g transform="translate(60, 390)">
+    <rect width="260" height="180" rx="6" class="tbl-bg" />
+    <path d="M 0,6 Q 0,0 6,0 L 254,0 Q 260,0 260,6 L 260,32 L 0,32 Z" class="tbl-header" />
+    <text x="130" y="21" class="tbl-title" text-anchor="middle">review_reports (EXPORTS)</text>
+
+    <rect x="1" y="32" width="258" height="28" fill="#ffffff" />
+    <text x="15" y="50" class="col-pk">PK</text>
+    <text x="45" y="50" class="col-name">id</text>
+    <text x="245" y="50" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="60" width="258" height="28" class="tbl-row-alt" />
+    <text x="15" y="78" class="col-fk">FK</text>
+    <text x="45" y="78" class="col-name">review_id</text>
+    <text x="245" y="78" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="88" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="106" class="col-name">report_type</text>
+    <text x="245" y="106" class="col-type" text-anchor="end">TEXT (PDF|SARIF)</text>
+
+    <rect x="1" y="116" width="258" height="28" class="tbl-row-alt" />
+    <text x="45" y="134" class="col-name">download_url</text>
+    <text x="245" y="134" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="144" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="162" class="col-name">created_at</text>
+    <text x="245" y="162" class="col-type" text-anchor="end">TIMESTAMPTZ</text>
+  </g>
+
+  <!-- TABLE 4: REVIEW_FILES -->
+  <g transform="translate(780, 110)">
+    <rect width="260" height="236" rx="6" class="tbl-bg" />
+    <path d="M 0,6 Q 0,0 6,0 L 254,0 Q 260,0 260,6 L 260,32 L 0,32 Z" class="tbl-header" />
+    <text x="130" y="21" class="tbl-title" text-anchor="middle">review_files (SOURCE FILES)</text>
+
+    <rect x="1" y="32" width="258" height="28" fill="#ffffff" />
+    <text x="15" y="50" class="col-pk">PK</text>
+    <text x="45" y="50" class="col-name">id</text>
+    <text x="245" y="50" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="60" width="258" height="28" class="tbl-row-alt" />
+    <text x="15" y="78" class="col-fk">FK</text>
+    <text x="45" y="78" class="col-name">review_id</text>
+    <text x="245" y="78" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="88" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="106" class="col-name">file_path</text>
+    <text x="245" y="106" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="116" width="258" height="28" class="tbl-row-alt" />
+    <text x="45" y="134" class="col-name">language</text>
+    <text x="245" y="134" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="144" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="162" class="col-name">lines_count</text>
+    <text x="245" y="162" class="col-type" text-anchor="end">INTEGER</text>
+
+    <rect x="1" y="172" width="258" height="28" class="tbl-row-alt" />
+    <text x="45" y="190" class="col-name">issues_count</text>
+    <text x="245" y="190" class="col-type" text-anchor="end">INTEGER</text>
+
+    <rect x="1" y="200" width="258" height="28" fill="#ffffff" />
+    <text x="45" y="218" class="col-name">created_at</text>
+    <text x="245" y="218" class="col-type" text-anchor="end">TIMESTAMPTZ</text>
+  </g>
+
+  <!-- TABLE 5: REVIEW_ISSUES -->
+  <g transform="translate(560, 470)">
+    <rect width="480" height="340" rx="6" class="tbl-bg" />
+    <path d="M 0,6 Q 0,0 6,0 L 474,0 Q 480,0 480,6 L 480,32 L 0,32 Z" class="tbl-header" />
+    <text x="240" y="21" class="tbl-title" text-anchor="middle">review_issues (SECURITY VULNERABILITIES &amp; AST FINDINGS)</text>
+
+    <rect x="1" y="32" width="478" height="28" fill="#ffffff" />
+    <text x="15" y="50" class="col-pk">PK</text>
+    <text x="45" y="50" class="col-name">id</text>
+    <text x="465" y="50" class="col-type" text-anchor="end">UUID</text>
+
+    <rect x="1" y="60" width="478" height="28" class="tbl-row-alt" />
+    <text x="15" y="78" class="col-fk">FK</text>
+    <text x="45" y="78" class="col-name">review_id</text>
+    <text x="465" y="78" class="col-type" text-anchor="end">UUID (REFERENCES reviews.id ON DELETE CASCADE)</text>
+
+    <rect x="1" y="88" width="478" height="28" fill="#ffffff" />
+    <text x="15" y="106" class="col-fk">FK</text>
+    <text x="45" y="106" class="col-name">file_id</text>
+    <text x="465" y="106" class="col-type" text-anchor="end">UUID (REFERENCES review_files.id ON DELETE CASCADE)</text>
+
+    <rect x="1" y="116" width="478" height="28" class="tbl-row-alt" />
+    <text x="45" y="134" class="col-name">line_number</text>
+    <text x="465" y="134" class="col-type" text-anchor="end">INTEGER</text>
+
+    <rect x="1" y="144" width="478" height="28" fill="#ffffff" />
+    <text x="45" y="162" class="col-name">severity</text>
+    <text x="465" y="162" class="col-type" text-anchor="end">TEXT (CRITICAL|HIGH|MEDIUM|LOW|INFO)</text>
+
+    <rect x="1" y="172" width="478" height="28" class="tbl-row-alt" />
+    <text x="45" y="190" class="col-name">category</text>
+    <text x="465" y="190" class="col-type" text-anchor="end">TEXT (SYNTAX|SECURITY|QUALITY|OPTIMIZATION)</text>
+
+    <rect x="1" y="200" width="478" height="28" fill="#ffffff" />
+    <text x="45" y="218" class="col-name">rule_id</text>
+    <text x="465" y="218" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="228" width="478" height="28" class="tbl-row-alt" />
+    <text x="45" y="246" class="col-name">title</text>
+    <text x="465" y="246" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="256" width="478" height="28" fill="#ffffff" />
+    <text x="45" y="274" class="col-name">diff_before / diff_after</text>
+    <text x="465" y="274" class="col-type" text-anchor="end">TEXT</text>
+
+    <rect x="1" y="284" width="478" height="28" class="tbl-row-alt" />
+    <text x="45" y="302" class="col-name">engine_source</text>
+    <text x="465" y="302" class="col-type" text-anchor="end">TEXT (STATIC|GEMINI|HYBRID)</text>
+
+    <rect x="1" y="312" width="478" height="28" fill="#ffffff" />
+    <text x="45" y="330" class="col-name">created_at</text>
+    <text x="465" y="330" class="col-type" text-anchor="end">TIMESTAMPTZ</text>
+  </g>
+
+  <!-- RELATIONSHIP LINES -->
+
+  <!-- profiles (1) to reviews (N) -->
+  <path d="M 320, 188 L 420, 188" class="rel-line" />
+  <circle cx="328" cy="188" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5" />
+  <line x1="336" y1="182" x2="336" y2="194" class="rel-line" />
+  <!-- Crow's foot at 420 -->
+  <line x1="412" y1="182" x2="420" y2="188" class="rel-line" />
+  <line x1="412" y1="194" x2="420" y2="188" class="rel-line" />
+  <text x="370" y="178" class="rel-label" text-anchor="middle">1 : N</text>
+
+  <!-- reviews (1) to review_files (N) -->
+  <path d="M 700, 188 L 780, 188" class="rel-line" />
+  <circle cx="708" cy="188" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5" />
+  <line x1="716" y1="182" x2="716" y2="194" class="rel-line" />
+  <!-- Crow's foot at 780 -->
+  <line x1="772" y1="182" x2="780" y2="188" class="rel-line" />
+  <line x1="772" y1="194" x2="780" y2="188" class="rel-line" />
+  <text x="740" y="178" class="rel-label" text-anchor="middle">1 : N</text>
+
+  <!-- reviews (1) to review_reports (N) -->
+  <path d="M 420, 420 L 320, 468" class="rel-line" />
+  <circle cx="412" cy="424" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5" />
+  <text x="380" y="450" class="rel-label" text-anchor="middle">1 : N</text>
+
+  <!-- reviews (1) to review_issues (N) -->
+  <path d="M 560, 450 L 560, 520" class="rel-line" />
+  <circle cx="560" cy="460" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5" />
+  <line x1="554" y1="512" x2="560" y2="520" class="rel-line" />
+  <line x1="566" y1="512" x2="560" y2="520" class="rel-line" />
+  <text x="580" y="490" class="rel-label">1 : N</text>
+
+  <!-- review_files (1) to review_issues (N) -->
+  <path d="M 910, 346 L 910, 470" class="rel-line" />
+  <circle cx="910" cy="356" r="4" fill="#ffffff" stroke="#475569" stroke-width="1.5" />
+  <line x1="904" y1="462" x2="910" y2="470" class="rel-line" />
+  <line x1="916" y1="462" x2="910" y2="470" class="rel-line" />
+  <text x="925" y="410" class="rel-label">1 : N</text>
+
+</svg>

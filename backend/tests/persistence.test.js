@@ -407,6 +407,50 @@ describe('Module 12: Database Persistence & Repository Layer (reviewRepository.j
       const checkRes = await request(app).get(`/api/v1/reviews/${reviewId}`);
       expect(checkRes.status).toBe(404);
     });
+
+    it('should bulk delete multiple reviews via DELETE /api/v1/reviews/batch', async () => {
+      const guestSessionId = `guest_bulk_del_${Date.now()}`;
+      const revId1 = crypto.randomUUID();
+      const revId2 = crypto.randomUUID();
+
+      await saveReviewResult({
+        id: revId1,
+        guestSessionId,
+        projectName: 'Bulk Delete 1',
+        sourceType: 'direct',
+        healthScore: 90,
+        grade: 'A',
+        files: [{ path: 'one.js', language: 'javascript' }],
+        issues: [],
+      });
+
+      await saveReviewResult({
+        id: revId2,
+        guestSessionId,
+        projectName: 'Bulk Delete 2',
+        sourceType: 'direct',
+        healthScore: 80,
+        grade: 'B',
+        files: [{ path: 'two.js', language: 'javascript' }],
+        issues: [],
+      });
+
+      const res = await request(app)
+        .delete('/api/v1/reviews/batch')
+        .set('x-guest-session-id', guestSessionId)
+        .send({ ids: [revId1, revId2] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.count).toBe(2);
+      expect(res.body.data.deletedIds).toEqual(expect.arrayContaining([revId1, revId2]));
+
+      // Verify neither is accessible
+      const check1 = await request(app).get(`/api/v1/reviews/${revId1}`);
+      expect(check1.status).toBe(404);
+      const check2 = await request(app).get(`/api/v1/reviews/${revId2}`);
+      expect(check2.status).toBe(404);
+    });
   });
 });
 

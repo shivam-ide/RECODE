@@ -40,6 +40,11 @@ export default function HistoryPage() {
   const [severityFilter, setSeverityFilter] = useState('all'); // 'all' | 'critical' | 'clean'
   const [sortBy, setSortBy] = useState('desc'); // 'desc' | 'asc' | 'score' | 'score-high'
 
+  // Selection & Bulk Actions state
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
   // Notification / toast feedback
   const [feedbackNotice, setFeedbackNotice] = useState(null);
 
@@ -154,6 +159,14 @@ export default function HistoryPage() {
   const handleDeleteAudit = async (auditId, projectName) => {
     // 1. Optimistic removal from state
     setReviews((prev) => prev.filter((item) => item.id !== auditId));
+    setSelectedIds((prev) => {
+      if (prev.has(auditId)) {
+        const next = new Set(prev);
+        next.delete(auditId);
+        return next;
+      }
+      return prev;
+    });
 
     setFeedbackNotice(`Audit record "${projectName}" removed from history.`);
     setTimeout(() => setFeedbackNotice(null), 3000);
@@ -180,6 +193,50 @@ export default function HistoryPage() {
       });
     } catch (err) {
       console.warn('Backend delete ignored for optimistic sync:', err);
+    }
+  };
+
+  // Bulk Delete Handler: DELETE /api/v1/reviews/batch
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const idsToDelete = Array.from(selectedIds);
+    const count = idsToDelete.length;
+    setIsBulkDeleting(true);
+
+    // 1. Optimistic removal from state
+    setReviews((prev) => prev.filter((item) => !selectedIds.has(item.id)));
+    setSelectedIds(new Set());
+    setShowBulkDeleteModal(false);
+    setIsBulkDeleting(false);
+
+    setFeedbackNotice(`Successfully removed ${count} audit record${count === 1 ? '' : 's'} from history.`);
+    setTimeout(() => setFeedbackNotice(null), 3000);
+
+    // 2. Fire backend batch deletion call
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (isGuest || !currentUser) {
+        headers['x-is-guest'] = 'true';
+        if (guestSessionId) {
+          headers['x-guest-session-id'] = guestSessionId;
+        }
+      } else {
+        const token = authToken || localStorage.getItem('recode_access_token');
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+        headers['x-user-id'] = currentUser.id;
+      }
+
+      await fetch(`${API_BASE_URL}/api/v1/reviews/batch`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({ ids: idsToDelete }),
+      });
+    } catch (err) {
+      console.warn('Backend bulk delete notice:', err.message);
     }
   };
 
@@ -280,6 +337,50 @@ export default function HistoryPage() {
     return result;
   }, [reviews, searchQuery, sourceFilter, severityFilter, sortBy]);
 
+  // Bulk Selection Helpers & Computed States
+  const isAllSelected = useMemo(() => {
+    if (filteredReviews.length === 0) return false;
+    return filteredReviews.every((r) => selectedIds.has(r.id));
+  }, [filteredReviews, selectedIds]);
+
+  const isIndeterminate = useMemo(() => {
+    if (filteredReviews.length === 0) return false;
+    const selectedCount = filteredReviews.filter((r) => selectedIds.has(r.id)).length;
+    return selectedCount > 0 && selectedCount < filteredReviews.length;
+  }, [filteredReviews, selectedIds]);
+
+  const handleToggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredReviews.forEach((r) => next.delete(r.id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredReviews.forEach((r) => next.add(r.id));
+        return next;
+      });
+    }
+  };
+
+  const handleToggleRow = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
   // High-Level Summary Statistics
   const summaryMetrics = useMemo(() => {
     const totalProjects = reviews.length;
@@ -365,7 +466,7 @@ export default function HistoryPage() {
           </span>
         </div>
 
-        {/* Right Side: Back to Dashboard, + Start New Review CTA, Connected User/Guest Pill */}
+        {/* Right Side: Back to Dashboard, Start New Review CTA, Connected User/Guest Pill */}
         <div className="flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => navigate('/submit')}
@@ -383,7 +484,7 @@ export default function HistoryPage() {
             type="button"
           >
             <Plus className="w-4 h-4 text-[#0F0F0F]" />
-            <span>+ Start New Review</span>
+            <span>Start New Review</span>
           </button>
 
           <UserSessionPill onClick={() => { if (isGuest) navigate('/'); }} />
@@ -575,8 +676,32 @@ export default function HistoryPage() {
                 </div>
               </div>
 
-              {/* Toolbar Right: Stats & Export */}
-              <div className="flex items-center justify-between sm:justify-end gap-3">
+              {/* Toolbar Right: Stats, Bulk Actions & Export */}
+              <div className="flex items-center justify-between sm:justify-end gap-3 flex-wrap">
+                {selectedIds.size > 0 && (
+                  <div className="flex items-center gap-2 animate-fadeIn">
+                    <span className="font-mono text-xs text-[#02C8F0] font-medium bg-[#02C8F0]/10 border border-[#02C8F0]/30 px-2.5 py-1 rounded-md">
+                      {selectedIds.size} selected
+                    </span>
+                    <button
+                      id="toolbar-bulk-delete-btn"
+                      onClick={() => setShowBulkDeleteModal(true)}
+                      type="button"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#FF4D4D]/15 hover:bg-[#FF4D4D]/25 border border-[#FF4D4D]/40 text-[#FF4D4D] font-mono text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Selected</span>
+                    </button>
+                    <button
+                      onClick={handleClearSelection}
+                      type="button"
+                      className="text-xs text-[#717171] hover:text-[#AAAAAA] underline font-mono cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                    <span className="text-[#303030] hidden sm:inline">•</span>
+                  </div>
+                )}
                 <span className="font-mono text-xs text-[#717171]">
                   Showing {filteredReviews.length} of {reviews.length} audits
                 </span>
@@ -597,6 +722,20 @@ export default function HistoryPage() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-[#141414] border-b border-[#303030]">
+                    <th className="py-3 px-3 w-10 text-center" scope="col">
+                      <input
+                        type="checkbox"
+                        id="select-all-checkbox"
+                        aria-label="Select all reviews"
+                        checked={isAllSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = isIndeterminate;
+                        }}
+                        onChange={handleToggleSelectAll}
+                        disabled={filteredReviews.length === 0}
+                        className="w-4 h-4 rounded border-[#404040] bg-[#212121] text-[#02C8F0] accent-[#02C8F0] focus:ring-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-mono text-[11px] uppercase tracking-wider text-[#717171] font-medium" scope="col">
                       PROJECT &amp; SOURCE
                     </th>
@@ -617,7 +756,7 @@ export default function HistoryPage() {
                 <tbody className="divide-y divide-[#262626] text-xs">
                   {loading ? (
                     <tr>
-                      <td colSpan="5" className="py-14 text-center text-[#AAAAAA] font-mono">
+                      <td colSpan="6" className="py-14 text-center text-[#AAAAAA] font-mono">
                         <div className="flex flex-col items-center justify-center gap-2">
                           <Loader2 className="w-6 h-6 text-[#02C8F0] animate-spin" />
                           <p className="text-xs text-[#717171]">Loading audit history...</p>
@@ -626,7 +765,7 @@ export default function HistoryPage() {
                     </tr>
                   ) : reviews.length === 0 ? (
                     <tr>
-                      <td colSpan="5" className="py-14 text-center text-[#AAAAAA] font-mono">
+                      <td colSpan="6" className="py-14 text-center text-[#AAAAAA] font-mono">
                         <div className="flex flex-col items-center justify-center gap-3 max-w-md mx-auto">
                           <div className="w-12 h-12 rounded-xl bg-[#212121] border border-[#303030] flex items-center justify-center">
                             {isGuest ? (
@@ -666,7 +805,7 @@ export default function HistoryPage() {
                     </tr>
                   ) : filteredReviews.length === 0 ? (
                     <tr>
-                      <td colSpan="5" className="py-12 text-center text-[#AAAAAA] font-mono">
+                      <td colSpan="6" className="py-12 text-center text-[#AAAAAA] font-mono">
                         <div className="flex flex-col items-center justify-center gap-2">
                           <Search className="w-6 h-6 text-[#717171]" />
                           <p>No audit records match your search or filter criteria.</p>
@@ -699,8 +838,23 @@ export default function HistoryPage() {
                       return (
                         <tr
                           key={row.id}
-                          className="hover:bg-[#1C1B1B] transition-colors group"
+                          className={`transition-colors group ${
+                            selectedIds.has(row.id)
+                              ? 'bg-[#02C8F0]/10 border-l-2 border-[#02C8F0]'
+                              : 'hover:bg-[#1C1B1B]'
+                          }`}
                         >
+                          {/* Col 0: Checkbox */}
+                          <td className="py-4 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              id={`select-row-${row.id}`}
+                              aria-label={`Select audit ${row.project_name || 'project'}`}
+                              checked={selectedIds.has(row.id)}
+                              onChange={() => handleToggleRow(row.id)}
+                              className="w-4 h-4 rounded border-[#404040] bg-[#212121] text-[#02C8F0] accent-[#02C8F0] focus:ring-0 cursor-pointer"
+                            />
+                          </td>
                           {/* Col 1: Project & Source */}
                           <td className="py-4 px-4">
                             <div className="flex flex-col gap-1.5">
@@ -815,31 +969,6 @@ export default function HistoryPage() {
                 </tbody>
               </table>
             </div>
-
-            {/* Table Pagination & Footer */}
-            <div className="p-4 border-t border-[#303030] flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#181818] font-mono text-xs text-[#AAAAAA]">
-              <div className="flex items-center gap-2 text-xs">
-                <span>Page 1 of 1</span>
-                <span className="text-[#444748]">•</span>
-                <span className="text-[#717171]">Total {filteredReviews.length} Records Saved</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  disabled
-                  className="px-3 py-1.5 bg-[#212121] border border-[#303030] rounded text-[#717171] opacity-50 cursor-not-allowed"
-                  type="button"
-                >
-                  Previous
-                </button>
-                <button
-                  disabled
-                  className="px-3 py-1.5 bg-[#212121] border border-[#303030] rounded text-[#717171] opacity-50 cursor-not-allowed"
-                  type="button"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
           </div>
 
           {/* 6. Guest Session Prompt Strip (When in guest mode with records) */}
@@ -867,27 +996,107 @@ export default function HistoryPage() {
             </div>
           )}
 
-          {/* 7. Docked Architecture / Diagnostic Reference Meta */}
-          <div className="p-4 bg-[#181818] border border-[#303030] rounded-xl flex flex-col md:flex-row items-center justify-between gap-2 font-mono text-xs text-[#717171]">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#02C8F0]"></span>
-              <span>ENGINE STATUS: OPERATIONAL</span>
-              <span>•</span>
-              <span>OWASP TOP 10 (2025): ACTIVE</span>
-              <span>•</span>
-              <span>AST CACHE HIT RATIO: 94.2%</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[#AAAAAA]">
-              <span>Session ID:</span>
-              <span className="text-[#02C8F0] font-mono">
-                {guestSessionId ? `${guestSessionId.slice(0, 16)}...` : '0x7F9B-LOCAL-CACHE'}
-              </span>
-            </div>
-          </div>
         </div>
       </main>
 
-      {/* 8. Docked Footer */}
+      {/* Floating Bulk Action Bar */}
+      {selectedIds.size > 0 && (
+        <aside
+          aria-label="Bulk actions"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[#1C1B1B]/95 border border-[#303030] shadow-2xl rounded-2xl px-5 py-3 flex items-center gap-4 text-xs font-mono animate-fadeIn"
+          style={{ backdropFilter: 'blur(12px)' }}
+        >
+          <div className="flex items-center gap-2 text-[#F1F1F1]">
+            <span className="w-2 h-2 rounded-full bg-[#02C8F0] animate-pulse"></span>
+            <span className="font-semibold text-white">
+              {selectedIds.size} {selectedIds.size === 1 ? 'audit' : 'audits'} selected
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-[#303030]"></div>
+
+          <div className="flex items-center gap-2">
+            <button
+              id="floating-bulk-delete-btn"
+              onClick={() => setShowBulkDeleteModal(true)}
+              type="button"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#FF4D4D] hover:bg-[#E03E3E] text-white font-semibold rounded-lg shadow-md transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Selected ({selectedIds.size})</span>
+            </button>
+
+            <button
+              onClick={handleClearSelection}
+              type="button"
+              className="px-2.5 py-1.5 text-[#AAAAAA] hover:text-[#F1F1F1] rounded-lg transition-colors cursor-pointer"
+            >
+              Deselect
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* Bulk Deletion Confirmation Modal */}
+      {showBulkDeleteModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn"
+          onClick={() => !isBulkDeleting && setShowBulkDeleteModal(false)}
+        >
+          <div
+            className="bg-[#181818] border border-[#303030] rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-[#FF4D4D]/15 border border-[#FF4D4D]/30 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-[#FF4D4D]" />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-[#F1F1F1]">
+                  Delete {selectedIds.size} Selected {selectedIds.size === 1 ? 'Audit' : 'Audits'}?
+                </h2>
+                <p className="text-xs text-[#AAAAAA] leading-relaxed">
+                  Are you sure you want to permanently delete {selectedIds.size} selected audit record{selectedIds.size === 1 ? '' : 's'} from your history? This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={() => setShowBulkDeleteModal(false)}
+                className="px-4 py-2 bg-[#212121] hover:bg-[#2A2A2A] text-[#AAAAAA] hover:text-[#F1F1F1] border border-[#303030] rounded-lg text-xs font-mono transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                id="confirm-bulk-delete-btn"
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={handleBulkDelete}
+                className="px-4 py-2 bg-[#FF4D4D] hover:bg-[#E03E3E] text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-md disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete {selectedIds.size} Audits</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Docked Footer */}
       <Footer />
     </div>
   );

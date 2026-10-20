@@ -3,6 +3,7 @@ const {
   getReviewById,
   getReviewHistory,
   deleteReviewById,
+  deleteReviewsByIds,
 } = require('../services/persistence/reviewRepository');
 const { generateReviewPdf } = require('../services/reports/pdfGenerator');
 const { generateSuggestedReadme } = require('../services/reports/readmeGenerator');
@@ -182,6 +183,48 @@ async function deleteReview(req, res, next) {
 }
 
 /**
+ * Controller: Bulk Delete Reviews by array of IDs
+ *
+ * @route DELETE /api/v1/reviews/batch
+ * @route POST /api/v1/reviews/bulk-delete
+ * @access Public (Subject to ownership check)
+ */
+async function deleteReviewsBulk(req, res, next) {
+  try {
+    const ids =
+      req.body?.ids ||
+      req.body?.reviewIds ||
+      (typeof req.query?.ids === 'string' ? req.query.ids.split(',') : null) ||
+      [];
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new AppError(
+        'An array of review IDs is required for bulk deletion.',
+        400
+      );
+    }
+
+    const guestSessionId =
+      req.headers['x-guest-session-id'] ||
+      req.query.guestSessionId ||
+      req.query.guest_session_id ||
+      null;
+    const userId = req.user?.id || req.headers['x-user-id'] || null;
+
+    const result = await deleteReviewsByIds(ids, { userId, guestSessionId });
+
+    return successResponse(
+      res,
+      200,
+      result,
+      `Successfully deleted ${result.count} review(s).`
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Controller: Download Review PDF Audit Report
  *
  * @route GET /api/v1/reviews/:id/pdf
@@ -266,6 +309,7 @@ module.exports = {
   getReviewDetails,
   getReviewHistoryController,
   deleteReview,
+  deleteReviewsBulk,
   downloadReviewPdf,
   downloadReviewReadme,
 };

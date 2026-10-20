@@ -32,9 +32,9 @@ recode-app/
 
 ## 📚 Project Documentation
 
-Comprehensive architectural specifications, developer setup instructions, and academic research appendices are available in the [`/docs`](./docs) directory:
-
 * 🏛️ **[System Architecture Specification](./docs/ARCHITECTURE.md)**: Monorepo topology, Express backend architecture, Supabase PostgreSQL schema, AST parser engine, Google Gemini AI pipeline, and Module 18 SSRF shield.
+* 📊 **[Entity Relationship (ER) Diagram](./docs/recode_er_diagram_chen.svg)** & **[Draw.io Source](./docs/recode_er_diagram.drawio)**: Full Chen notation ER model and Crow's foot relational database schema diagrams (available in SVG, PNG, and multi-tab `.drawio`).
+* 📖 **[Dissertation Blackbook](./docs/RECODE_DISSERTATION_BLACKBOOK.md)**: Academic dissertation thesis for University of Mumbai Bachelor of Science in Computer Science (B.Sc. CS).
 * 🛠️ **[Developer Setup & Installation Guide](./docs/SETUP_GUIDE.md)**: Prerequisites, environment variables, database migration commands, dev server workflows, and troubleshooting.
 * 🎓 **[B.Sc. Computer Science Project Report Appendix](./docs/PROJECT_REPORT_APPENDIX.md)**: Formal academic project documentation covering problem formulation, 19-module breakdown, test results matrix, and future scope.
 

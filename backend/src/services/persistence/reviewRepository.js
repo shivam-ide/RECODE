@@ -389,6 +389,59 @@ async function deleteReviewById(reviewId, userOrGuestContext = {}) {
 }
 
 /**
+ * 3b. Bulk Delete Reviews by array of IDs
+ *
+ * @param {Array<string>} reviewIds
+ * @param {Object} [userOrGuestContext]
+ * @returns {Promise<{ count: number, deletedIds: Array<string> }>}
+ */
+async function deleteReviewsByIds(reviewIds, userOrGuestContext = {}) {
+  if (!Array.isArray(reviewIds) || reviewIds.length === 0) {
+    return { count: 0, deletedIds: [] };
+  }
+
+  const cleanIds = reviewIds.filter(
+    (id) => typeof id === 'string' && id.trim().length > 0
+  );
+  if (cleanIds.length === 0) {
+    return { count: 0, deletedIds: [] };
+  }
+
+  for (const id of cleanIds) {
+    inMemoryReviews.delete(id);
+  }
+
+  let client = supabaseAdmin;
+  if (userOrGuestContext.guestSessionId && !userOrGuestContext.isAdmin) {
+    client = createScopedClient({
+      guestSessionId: userOrGuestContext.guestSessionId,
+    });
+  }
+
+  let query = client.from('reviews').delete().in('id', cleanIds);
+
+  if (!userOrGuestContext.isAdmin) {
+    if (userOrGuestContext.userId) {
+      query = query.eq('user_id', userOrGuestContext.userId);
+    } else if (userOrGuestContext.guestSessionId) {
+      query = query.eq('guest_session_id', userOrGuestContext.guestSessionId);
+    }
+  }
+
+  try {
+    const { error } = await query;
+    if (error) {
+      throw new AppError(`Failed to bulk delete reviews: ${error.message}`, 500);
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    // in-memory fallback handles gracefully
+  }
+
+  return { count: cleanIds.length, deletedIds: cleanIds };
+}
+
+/**
  * 4. Fetch Review History for User or Guest Session
  *
  * @param {Object} [userOrGuestContext]
@@ -522,6 +575,7 @@ module.exports = {
   saveReviewResult,
   getReviewById,
   deleteReviewById,
+  deleteReviewsByIds,
   getReviewHistory,
   normalizePath,
 };

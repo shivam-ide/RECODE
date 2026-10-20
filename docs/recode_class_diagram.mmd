@@ -1,0 +1,110 @@
+classDiagram
+    direction TB
+
+    %% User & Authentication Compartments
+    class User {
+        -String userId
+        -String email
+        -DateTime createdAt
+        +register() Void
+        +login() Void
+        +logout() Void
+        +getAuditHistory() List
+    }
+
+    class AuthService {
+        -Object supabaseClient
+        +validateSession(String token) Boolean
+        +getCurrentUser() User
+    }
+
+    %% Core Review Orchestrator
+    class ReviewSession {
+        -String reviewId
+        -String sourceType
+        -String repoUrl
+        -Float overallHealthScore
+        -String overallGrade
+        -DateTime createdAt
+        +initiateAudit() Void
+        +calculateHealthScore() Float
+        +applyUnifiedPatch(String issueId) Void
+        +exportReport() Blob
+    }
+
+    %% Ingested File Representation
+    class ScannedFile {
+        -String fileId
+        -String filePath
+        -String fileContent
+        -Int fileSizeBytes
+        +parseAST() Object
+        +applyDiff(String patch) String
+    }
+
+    %% Base Analyzer (Generalization)
+    class BaseAnalyzer {
+        <<abstract>>
+        #String engineName
+        +analyze(String sourceCode) List~DetectedIssue~*
+    }
+
+    %% Deterministic AST Engine
+    class StaticASTAnalyzer {
+        -Object babelParser
+        +analyze(String sourceCode) List~DetectedIssue~
+        -inspectSyntaxErrors(Object ast) Void
+        -detectHardcodedSecrets(Object ast) Void
+    }
+
+    %% Contextual AI Engine
+    class GeminiAIAnalyzer {
+        -String apiKey
+        -String modelName
+        +analyze(String sourceCode) List~DetectedIssue~
+        -buildPrompt(String snippet) String
+        -enforceJSONSchema(String rawResponse) List~DetectedIssue~
+    }
+
+    %% Diagnostic Finding Entity
+    class DetectedIssue {
+        -String issueId
+        -String ruleId
+        -String engineType
+        -String severity
+        -Int startLine
+        -Int endLine
+        -String message
+        -String suggestedPatch
+        +getDiffDetails() String
+    }
+
+    %% Ingestion & Ingress Shield Service
+    class GitHubCrawlerService {
+        -String apiToken
+        +validateRepoUrl(String url) Boolean
+        +fetchTree(String repoUrl) List~ScannedFile~
+        -checkSSRF(String host) Boolean
+    }
+
+    %% Audit Artifact Export Service
+    class PDFReportService {
+        -Object pdfDoc
+        +compileReport(ReviewSession session) Blob
+        -renderSummary() Void
+        -renderIssues() Void
+    }
+
+    %% UML Relationships & Structural Bindings
+    User "1" --> "0..*" ReviewSession : initiates
+    User ..> AuthService : authenticates via
+
+    ReviewSession "1" *-- "1..*" ScannedFile : contains
+    ReviewSession ..> PDFReportService : uses
+    ReviewSession ..> GitHubCrawlerService : fetches via
+
+    BaseAnalyzer <|-- StaticASTAnalyzer : inherits
+    BaseAnalyzer <|-- GeminiAIAnalyzer : inherits
+
+    ScannedFile ..> BaseAnalyzer : analyzed by
+    ScannedFile "1" *-- "0..*" DetectedIssue : detects

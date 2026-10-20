@@ -8,6 +8,7 @@ const {
   getReviewDetails,
   getReviewHistoryController,
   deleteReview,
+  deleteReviewsBulk,
   downloadReviewPdf,
   downloadReviewReadme,
 } = reviewController;
@@ -55,6 +56,17 @@ router.get('/:id/readme', downloadReviewReadme);
  * @access  Public (Subject to RLS/ownership)
  */
 router.get('/:id', getReviewDetails);
+
+/**
+ * @route   DELETE /api/v1/reviews/batch
+ * @route   POST /api/v1/reviews/bulk-delete
+ * @route   DELETE /api/v1/reviews
+ * @desc    Bulk delete audit review sessions by array of IDs
+ * @access  Public (Subject to RLS/ownership)
+ */
+router.delete('/batch', deleteReviewsBulk);
+router.post('/bulk-delete', deleteReviewsBulk);
+router.delete('/', deleteReviewsBulk);
 
 /**
  * @route   DELETE /api/v1/reviews/:id

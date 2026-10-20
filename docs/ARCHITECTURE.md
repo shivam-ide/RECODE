@@ -268,8 +268,13 @@ erDiagram
         text report_type
         text storage_path
         timestamptz created_at
-    }
 ```
+
+### Diagram Artifacts & Architecture Assets
+- **Draw.io Multi-Tab Model**: [`docs/recode_er_diagram.drawio`](file:///d:/RECODE%20DEV/recode-app/docs/recode_er_diagram.drawio) (Contains both Chen Notation and Relational Crow's Foot tabs)
+- **Chen Notation ER Model**: [`docs/recode_er_diagram_chen.svg`](file:///d:/RECODE%20DEV/recode-app/docs/recode_er_diagram_chen.svg) | [`docs/recode_er_diagram_chen.png`](file:///d:/RECODE%20DEV/recode-app/docs/recode_er_diagram_chen.png) (300 DPI)
+- **Relational Schema Model**: [`docs/recode_er_diagram_relational.svg`](file:///d:/RECODE%20DEV/recode-app/docs/recode_er_diagram_relational.svg) | [`docs/recode_er_diagram_relational.png`](file:///d:/RECODE%20DEV/recode-app/docs/recode_er_diagram_relational.png) (300 DPI)
+- **UML Class Diagram Model**: [`docs/recode_class_diagram.mmd`](file:///d:/RECODE%20DEV/recode-app/docs/recode_class_diagram.mmd) | [`docs/recode_class_diagram.svg`](file:///d:/RECODE%20DEV/recode-app/docs/recode_class_diagram.svg) | [`docs/recode_class_diagram.png`](file:///d:/RECODE%20DEV/recode-app/docs/recode_class_diagram.png) (300 DPI)
 
 ### Table Definitions & Constraints
 1. **`public.profiles`**: Synchronized automatically with `auth.users` via PostgreSQL triggers on signup.
